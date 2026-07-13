@@ -1,0 +1,40 @@
+[package]
+name = "mixflow"
+version = "0.1.0"
+description = "Virtual audio routing & mixing desktop app (SteelSeries Sonar-like)"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon: system-tray support (Discord-like minimize-to-tray).
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Cross-platform audio I/O — uses WASAPI on Windows (shared mode).
+cpal = "0.15"
+# Lock-free SPSC ring buffers between capture threads and render threads.
+ringbuf = "0.4"
+# Non-poisoning mutexes for app state.
+parking_lot = "0.12"
+# Raw Windows APIs: audio-session enumeration (which apps are playing sound)
+# and per-app output-device routing (the drag-and-drop feature).
+windows-core = "0.61"
+windows = { version = "0.61", features = [
+  "Win32_Media_Audio",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_System_Threading",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_WinRT",
+  "Win32_Foundation",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

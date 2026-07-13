@@ -1,0 +1,4 @@
+# Husky hooks are shell scripts — force LF so Git for Windows' autocrlf
+# never turns them into CRLF (that breaks `sh -e` execution).
+.husky/* text eol=lf
+*.sh text eol=lf

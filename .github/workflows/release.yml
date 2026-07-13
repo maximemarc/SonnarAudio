@@ -1,0 +1,35 @@
+name: Release
+
+# Push a tag like `v0.2.0` to build the NSIS installer and attach it to a
+# draft GitHub Release. Windows-only build (see ci.yml for why).
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "MixFlow ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false

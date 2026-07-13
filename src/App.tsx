@@ -1,0 +1,368 @@
+/**
+ * MixFlow — console de mixage.
+ *
+ * State strategy:
+ * - `config` mirrors the backend AppConfig. Topology commands return the
+ *   fresh config (backend owns the ids); live commands are applied
+ *   optimistically here and fire-and-forget to the backend.
+ * - VU levels bypass React entirely (see levels.ts / VSlider.tsx's meter prop).
+ */
+
+import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import * as api from "./api";
+import { initLevels } from "./levels";
+import type { AppConfig, AppInfo, DeviceList, DuckRule, EngineStatus } from "./types";
+import { LINE_COLORS } from "./types";
+import ChannelStrip from "./components/ChannelStrip";
+import MasterStrip from "./components/MasterStrip";
+import ChatMix from "./components/ChatMix";
+import DuckingPanel from "./components/DuckingPanel";
+import EqPage from "./components/EqPage";
+import logo from "./assets/logo.png";
+
+export default function App() {
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [devices, setDevices] = useState<DeviceList>({ inputs: [], outputs: [] });
+  const [apps, setApps] = useState<AppInfo[]>([]);
+  const [status, setStatus] = useState<EngineStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<"console" | "eq">("console");
+  const [eqLineId, setEqLineId] = useState<string>("");
+
+  const refreshApps = useCallback(() => {
+    api
+      .listApps()
+      .then(setApps)
+      .catch((e) => setError(`Détection des applications : ${e}`));
+  }, []);
+
+  useEffect(() => {
+    initLevels();
+    void api.getConfig().then(setConfig);
+    void api.listDevices().then(setDevices);
+    refreshApps();
+    // Apps come and go — light periodic rescan + rescan when the window
+    // regains focus (the user just launched something).
+    const t = setInterval(refreshApps, 10_000);
+    window.addEventListener("focus", refreshApps);
+    const unlisten = listen<EngineStatus>("engine_status", (e) => setStatus(e.payload));
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("focus", refreshApps);
+      void unlisten.then((f) => f());
+    };
+  }, [refreshApps]);
+
+  const refreshDevices = useCallback(() => {
+    void api.listDevices().then(setDevices);
+  }, []);
+
+  // Optimistic local patch helper for live params.
+  const patch = useCallback((fn: (cfg: AppConfig) => AppConfig) => {
+    setConfig((c) => (c ? fn(structuredClone(c)) : c));
+  }, []);
+
+  if (!config) {
+    return <div className="boot">Chargement…</div>;
+  }
+
+  const appLines = config.lines.filter((l) => l.kind !== "mic");
+  const micLines = config.lines.filter((l) => l.kind === "mic");
+
+  // Périphériques physiques vers lesquels joue une ligne (fan-out possible,
+  // via ses bus cachés).
+  const outputDevicesOf = (lineId: string): string[] => {
+    const line = config.lines.find((l) => l.id === lineId);
+    if (!line) return [];
+    return line.routes
+      .map((r) => config.outputs.find((o) => o.id === r.output_id)?.device)
+      .filter((d): d is string => !!d);
+  };
+
+  const addOutputTo = (lineId: string, device: string) => {
+    const next = Array.from(new Set([...outputDevicesOf(lineId), device]));
+    void api.setLineOutputs(lineId, next).then(setConfig);
+  };
+  const removeOutputFrom = (lineId: string, device: string) => {
+    const next = outputDevicesOf(lineId).filter((d) => d !== device);
+    void api.setLineOutputs(lineId, next).then(setConfig);
+  };
+
+  // "Router vers" (dock) et drag-and-drop passent tous deux par ici.
+  const assignAppTo = (lineId: string, exe: string) => {
+    setError(null);
+    api
+      .assignApp(lineId, exe)
+      .then((res) => {
+        setConfig(res.config);
+        if (res.notice) setError(res.notice);
+        refreshApps();
+        refreshDevices(); // le câble vient d'être renommé
+      })
+      .catch((e) => setError(String(e)));
+  };
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <img className="brand-mark" src={logo} alt="" />
+          MixFlow
+        </div>
+        <nav className="tabs">
+          <button
+            className={`tab ${view === "console" ? "on" : ""}`}
+            onClick={() => setView("console")}
+          >
+            Console
+          </button>
+          <button className={`tab ${view === "eq" ? "on" : ""}`} onClick={() => setView("eq")}>
+            Égaliseur
+          </button>
+        </nav>
+        <div className="topbar-right">
+          <span
+            className={`engine-pill ${status && status.warnings.length > 0 ? "warn" : "ok"}`}
+            title={status?.warnings.join("\n") || "Moteur audio actif"}
+          >
+            {status
+              ? status.warnings.length > 0
+                ? `${status.warnings.length} avertissement(s)`
+                : `${status.active_captures} entrée(s) · ${status.active_renders} sortie(s)`
+              : "démarrage…"}
+          </span>
+          <button
+            className="btn-ghost"
+            onClick={refreshDevices}
+            title="Re-scanner les périphériques audio"
+          >
+            ⟳ Périphériques
+          </button>
+        </div>
+      </header>
+
+      {status && status.warnings.length > 0 && (
+        <div className="warn-banner">
+          {status.warnings.map((w, i) => (
+            <div key={i}>{w}</div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="error-banner" onClick={() => setError(null)} title="Cliquer pour fermer">
+          {error}
+        </div>
+      )}
+
+      {view === "eq" ? (
+        <main className="content">
+          <EqPage
+            config={config}
+            selectedId={eqLineId || config.lines[0]?.id || ""}
+            onSelect={setEqLineId}
+            onBands={(lineId, bands) => {
+              patch((c) => {
+                const l = c.lines.find((x) => x.id === lineId);
+                if (l) l.eq_bands = bands.map((b) => ({ ...b }));
+                return c;
+              });
+              void api.setLineEqBands(lineId, bands);
+            }}
+            onSavePreset={(name, bands) => void api.saveEqPreset(name, bands).then(setConfig)}
+            onDeletePreset={(name) => void api.deleteEqPreset(name).then(setConfig)}
+          />
+        </main>
+      ) : (
+        <main className="content">
+          {/* La console : Master | Canaux | Applications | Micro. */}
+          <section className="console">
+            <div className="console-group">
+              <h2>Master</h2>
+              <div className="rail">
+                <MasterStrip
+                  value={config.master_gain}
+                  onChange={(g) => {
+                    patch((c) => {
+                      c.master_gain = g;
+                      return c;
+                    });
+                    void api.setMasterGain(g);
+                  }}
+                  unrouted={apps.filter(
+                    (a) =>
+                      !config.lines.some((l) =>
+                        l.apps.some((e) => e.toLowerCase() === a.exe.toLowerCase()),
+                      ),
+                  )}
+                  onRefresh={refreshApps}
+                />
+              </div>
+            </div>
+
+            <div className="console-divider" />
+
+            <div className="console-group">
+              <h2>Canaux</h2>
+              <div className="rail">
+                {appLines.map((line) => (
+                  <ChannelStrip
+                    key={line.id}
+                    line={line}
+                    inputDevices={devices.inputs}
+                    outputDevices={devices.outputs}
+                    selectedOutputs={outputDevicesOf(line.id)}
+                    onAddOutput={(d) => addOutputTo(line.id, d)}
+                    onRemoveOutput={(d) => removeOutputFrom(line.id, d)}
+                    onSetInput={(d) => void api.setLineInput(line.id, d).then(setConfig)}
+                    runningExes={apps.map((a) => a.exe.toLowerCase())}
+                    onDropApp={(exe) => assignAppTo(line.id, exe)}
+                    onRemoveApp={(exe) => {
+                      api
+                        .unassignApp(line.id, exe)
+                        .then((cfg) => {
+                          setConfig(cfg);
+                          refreshApps();
+                        })
+                        .catch((e) => setError(String(e)));
+                    }}
+                    onGain={(g) => {
+                      patch((c) => {
+                        const l = c.lines.find((x) => x.id === line.id);
+                        if (l) l.gain = g;
+                        return c;
+                      });
+                      void api.setLineGain(line.id, g);
+                    }}
+                    onMute={(m) => {
+                      patch((c) => {
+                        const l = c.lines.find((x) => x.id === line.id);
+                        if (l) l.muted = m;
+                        return c;
+                      });
+                      void api.setLineMuted(line.id, m);
+                    }}
+                    onOpenEq={() => {
+                      setEqLineId(line.id);
+                      setView("eq");
+                    }}
+                    onRename={(name) => {
+                      patch((c) => {
+                        const l = c.lines.find((x) => x.id === line.id);
+                        if (l) l.name = name;
+                        return c;
+                      });
+                      void api.updateLineMeta(line.id, name, line.color);
+                    }}
+                    onRemove={() => void api.removeLine(line.id).then(setConfig)}
+                  />
+                ))}
+                <button
+                  className="strip-add"
+                  title="Ajouter un canal d'applications"
+                  onClick={() =>
+                    void api
+                      .addLine(
+                        `Canal ${appLines.length + 1}`,
+                        LINE_COLORS[config.lines.length % LINE_COLORS.length],
+                        "app",
+                      )
+                      .then(setConfig)
+                  }
+                >
+                  +<small>Canal</small>
+                </button>
+              </div>
+              {/* CHATMIX — équilibre Game/Chat, la signature Sonar. */}
+              <ChatMix
+                lines={appLines}
+                onGain={(lineId, g) => {
+                  patch((c) => {
+                    const l = c.lines.find((x) => x.id === lineId);
+                    if (l) l.gain = g;
+                    return c;
+                  });
+                  void api.setLineGain(lineId, g);
+                }}
+              />
+            </div>
+
+            <div className="console-divider" />
+
+            {/* Section dédiée au(x) micro(s), à droite. */}
+            <div className="console-group">
+              <h2>Microphone</h2>
+              <div className="rail">
+                {micLines.map((line) => (
+                  <ChannelStrip
+                    key={line.id}
+                    line={line}
+                    inputDevices={devices.inputs}
+                    outputDevices={devices.outputs}
+                    selectedOutputs={outputDevicesOf(line.id)}
+                    onAddOutput={(d) => addOutputTo(line.id, d)}
+                    onRemoveOutput={(d) => removeOutputFrom(line.id, d)}
+                    onSetInput={(d) => void api.setLineInput(line.id, d).then(setConfig)}
+                    onGain={(g) => {
+                      patch((c) => {
+                        const l = c.lines.find((x) => x.id === line.id);
+                        if (l) l.gain = g;
+                        return c;
+                      });
+                      void api.setLineGain(line.id, g);
+                    }}
+                    onMute={(m) => {
+                      patch((c) => {
+                        const l = c.lines.find((x) => x.id === line.id);
+                        if (l) l.muted = m;
+                        return c;
+                      });
+                      void api.setLineMuted(line.id, m);
+                    }}
+                    onOpenEq={() => {
+                      setEqLineId(line.id);
+                      setView("eq");
+                    }}
+                    onRename={(name) => {
+                      patch((c) => {
+                        const l = c.lines.find((x) => x.id === line.id);
+                        if (l) l.name = name;
+                        return c;
+                      });
+                      void api.updateLineMeta(line.id, name, line.color);
+                    }}
+                    onRemove={() => void api.removeLine(line.id).then(setConfig)}
+                  />
+                ))}
+                <button
+                  className="strip-add"
+                  title="Ajouter un micro"
+                  onClick={() =>
+                    void api.addLine(`Mic ${micLines.length + 1}`, "#fb923c", "mic").then(setConfig)
+                  }
+                >
+                  +<small>Micro</small>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>Priorité — ducking</h2>
+            <DuckingPanel
+              config={config}
+              onChange={(rules: DuckRule[]) => {
+                patch((c) => {
+                  c.ducking = rules;
+                  return c;
+                });
+                void api.setDuckRules(rules);
+              }}
+            />
+          </section>
+        </main>
+      )}
+    </div>
+  );
+}
