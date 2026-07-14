@@ -11,6 +11,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # tray-icon: system-tray support (Discord-like minimize-to-tray).
 tauri = { version = "2", features = ["tray-icon"] }
+# "Démarrer avec Windows" — registers/unregisters the app in the current
+# user's Run key, no admin rights needed.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Cross-platform audio I/O — uses WASAPI on Windows (shared mode).

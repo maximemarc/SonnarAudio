@@ -65,3 +65,10 @@ export const deleteEqPreset = (name: string) => invoke<AppConfig>("delete_eq_pre
 export const setDuckRules = (rules: DuckRule[]) => invoke<void>("set_duck_rules", { rules });
 
 export const setMasterGain = (gain: number) => invoke<void>("set_master_gain", { gain });
+
+// -- démarrage avec Windows ---------------------------------------------------
+
+export const getAutostartEnabled = () => invoke<boolean>("get_autostart_enabled");
+
+export const setAutostartEnabled = (enabled: boolean) =>
+  invoke<void>("set_autostart_enabled", { enabled });

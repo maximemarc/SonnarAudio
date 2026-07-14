@@ -34,7 +34,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use parking_lot::{Mutex, RwLock};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 use audio::controls::Controls;
 use audio::dsp::EQ_FREQS;
@@ -758,12 +759,30 @@ fn set_duck_rules(rules: Vec<DuckRule>, state: State<AppState>) {
     persist(&state);
 }
 
+/// "Démarrer avec Windows" — reads the actual current-user Run key state
+/// rather than mirroring a config flag, so it can't drift from reality.
+#[tauri::command]
+fn get_autostart_enabled(app: AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart_enabled(enabled: bool, app: AppHandle) -> Result<(), String> {
+    let mgr = app.autolaunch();
+    let res = if enabled { mgr.enable() } else { mgr.disable() };
+    res.map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         // Discord-like behavior: closing the window hides it to the tray,
         // the audio engine keeps running in the background.
         .on_window_event(|window, event| {
@@ -1002,7 +1021,9 @@ fn main() {
             save_eq_preset,
             delete_eq_preset,
             set_master_gain,
-            set_duck_rules
+            set_duck_rules,
+            get_autostart_enabled,
+            set_autostart_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running MixFlow");

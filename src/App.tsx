@@ -33,6 +33,7 @@ export default function App() {
   // aussi aux autres (pratique pour rebasculer plusieurs canaux d'un coup
   // vers un nouveau casque). Purement une commodité d'UI, pas persisté.
   const [syncedLines, setSyncedLines] = useState<Set<string>>(() => new Set());
+  const [autostart, setAutostart] = useState(false);
 
   const refreshApps = useCallback(() => {
     api
@@ -45,6 +46,7 @@ export default function App() {
     initLevels();
     void api.getConfig().then(setConfig);
     void api.listDevices().then(setDevices);
+    void api.getAutostartEnabled().then(setAutostart);
     refreshApps();
     // Apps come and go — light periodic rescan + rescan when the window
     // regains focus (the user just launched something).
@@ -126,6 +128,14 @@ export default function App() {
     });
     void api.removeLine(lineId).then(setConfig);
   };
+  const toggleAutostart = () => {
+    const next = !autostart;
+    setAutostart(next); // optimiste : rollback si Windows refuse (rare, pas besoin d'admin)
+    api.setAutostartEnabled(next).catch((e) => {
+      setAutostart(!next);
+      setError(String(e));
+    });
+  };
 
   // "Router vers" (dock) et drag-and-drop passent tous deux par ici.
   const assignAppTo = (lineId: string, exe: string) => {
@@ -170,6 +180,17 @@ export default function App() {
                 : `${status.active_captures} entrée(s) · ${status.active_renders} sortie(s)`
               : "démarrage…"}
           </span>
+          <button
+            className={`btn-ghost ${autostart ? "on" : ""}`}
+            onClick={toggleAutostart}
+            title={
+              autostart
+                ? "Ne plus démarrer avec Windows"
+                : "Démarrer automatiquement à l'ouverture de session"
+            }
+          >
+            {autostart ? "✓ Démarrage auto" : "Démarrage auto"}
+          </button>
           <button
             className="btn-ghost"
             onClick={refreshDevices}

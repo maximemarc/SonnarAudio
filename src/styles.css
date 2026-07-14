@@ -953,6 +953,11 @@ button {
   color: var(--text);
   border-color: var(--dim);
 }
+.btn-ghost.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
 
 /* -- selects -------------------------------------------------------------------------- */
 
