@@ -597,6 +597,49 @@ body {
   color: var(--dim);
 }
 
+/* En-tête "Sortie" + bouton Sync (lie l'ajout de sortie entre canaux). */
+.strip-outputs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.sync-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.sync-btn svg {
+  width: 11px;
+  height: 11px;
+}
+.sync-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--text);
+}
+.sync-btn.on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.sync-hint {
+  font-size: 10px;
+  color: color-mix(in srgb, var(--accent) 75%, var(--dim));
+  margin-top: -2px;
+}
+
 /* Canal d'apps : pas de menu périphérique, juste l'état du câble. */
 .strip-status {
   font-size: 11px;

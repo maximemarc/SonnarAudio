@@ -17,7 +17,7 @@ import { curvePoints } from "../eqMath";
 import { useLiveLevel } from "../useLiveLevel";
 import DeviceSelect from "./DeviceSelect";
 import VSlider from "./VSlider";
-import { HeadphonesIcon, MicIcon, SpeakerIcon, SpeakerOffIcon } from "./Icons";
+import { HeadphonesIcon, LinkIcon, MicIcon, SpeakerIcon, SpeakerOffIcon } from "./Icons";
 import { pickIcon } from "./pickIcon";
 
 /** "Haut-parleurs (Creative Pebble X Plus)" -> "Haut-parleurs". */
@@ -32,6 +32,10 @@ interface Props {
   selectedOutputs: string[];
   onAddOutput: (device: string) => void;
   onRemoveOutput: (device: string) => void;
+  /** Sortie liée à d'autres canaux : ajouter une sortie ici l'ajoute aussi chez eux. */
+  synced: boolean;
+  onToggleSync: () => void;
+  syncPartnerNames: string[];
   onSetInput: (device: string | null) => void;
   onGain: (gain: number) => void;
   onMute: (muted: boolean) => void;
@@ -53,6 +57,9 @@ export default function ChannelStrip({
   selectedOutputs,
   onAddOutput,
   onRemoveOutput,
+  synced,
+  onToggleSync,
+  syncPartnerNames,
   onSetInput,
   onGain,
   onMute,
@@ -135,7 +142,18 @@ export default function ChannelStrip({
         </div>
       )}
 
-      <label className="strip-label">Sortie{selectedOutputs.length > 1 ? "s" : ""}</label>
+      <div className="strip-outputs-head">
+        <label className="strip-label">Sortie{selectedOutputs.length > 1 ? "s" : ""}</label>
+        <button
+          type="button"
+          className={`sync-btn ${synced ? "on" : ""}`}
+          title="Synchroniser la sortie avec d'autres canaux"
+          onClick={onToggleSync}
+        >
+          <LinkIcon />
+          Sync
+        </button>
+      </div>
       <div className="strip-outputs">
         {selectedOutputs.length === 0 && <span className="apps-hint">Aucune sortie</span>}
         {selectedOutputs.map((d) => (
@@ -160,6 +178,9 @@ export default function ChannelStrip({
         role="speaker"
         onChange={(d) => d && onAddOutput(d)}
       />
+      {syncPartnerNames.length > 0 && (
+        <div className="sync-hint">Synchronisé avec {syncPartnerNames.join(", ")}</div>
+      )}
 
       {/* Aperçu de la courbe EQ — clic = ouvre l'onglet Égaliseur. */}
       <button

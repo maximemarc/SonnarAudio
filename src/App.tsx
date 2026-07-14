@@ -29,6 +29,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"console" | "eq">("console");
   const [eqLineId, setEqLineId] = useState<string>("");
+  // Canaux dont la sortie est "liée" : ajouter une sortie à l'un l'ajoute
+  // aussi aux autres (pratique pour rebasculer plusieurs canaux d'un coup
+  // vers un nouveau casque). Purement une commodité d'UI, pas persisté.
+  const [syncedLines, setSyncedLines] = useState<Set<string>>(() => new Set());
 
   const refreshApps = useCallback(() => {
     api
@@ -83,10 +87,44 @@ export default function App() {
   const addOutputTo = (lineId: string, device: string) => {
     const next = Array.from(new Set([...outputDevicesOf(lineId), device]));
     void api.setLineOutputs(lineId, next).then(setConfig);
+    // Sync : propager le nouvel appareil aux autres canaux liés (sans
+    // toucher à leurs autres sorties existantes).
+    if (syncedLines.has(lineId)) {
+      for (const otherId of syncedLines) {
+        if (otherId === lineId) continue;
+        const otherOutputs = outputDevicesOf(otherId);
+        if (otherOutputs.includes(device)) continue;
+        void api.setLineOutputs(otherId, [...otherOutputs, device]).then(setConfig);
+      }
+    }
   };
   const removeOutputFrom = (lineId: string, device: string) => {
     const next = outputDevicesOf(lineId).filter((d) => d !== device);
     void api.setLineOutputs(lineId, next).then(setConfig);
+  };
+  const toggleSync = (lineId: string) => {
+    setSyncedLines((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  };
+  const syncPartnerNames = (lineId: string): string[] =>
+    syncedLines.has(lineId)
+      ? Array.from(syncedLines)
+          .filter((id) => id !== lineId)
+          .map((id) => config.lines.find((l) => l.id === id)?.name)
+          .filter((n): n is string => !!n)
+      : [];
+  const removeLine = (lineId: string) => {
+    setSyncedLines((prev) => {
+      if (!prev.has(lineId)) return prev;
+      const next = new Set(prev);
+      next.delete(lineId);
+      return next;
+    });
+    void api.removeLine(lineId).then(setConfig);
   };
 
   // "Router vers" (dock) et drag-and-drop passent tous deux par ici.
@@ -215,6 +253,9 @@ export default function App() {
                     selectedOutputs={outputDevicesOf(line.id)}
                     onAddOutput={(d) => addOutputTo(line.id, d)}
                     onRemoveOutput={(d) => removeOutputFrom(line.id, d)}
+                    synced={syncedLines.has(line.id)}
+                    onToggleSync={() => toggleSync(line.id)}
+                    syncPartnerNames={syncPartnerNames(line.id)}
                     onSetInput={(d) => void api.setLineInput(line.id, d).then(setConfig)}
                     runningExes={apps.map((a) => a.exe.toLowerCase())}
                     onDropApp={(exe) => assignAppTo(line.id, exe)}
@@ -255,7 +296,7 @@ export default function App() {
                       });
                       void api.updateLineMeta(line.id, name, line.color);
                     }}
-                    onRemove={() => void api.removeLine(line.id).then(setConfig)}
+                    onRemove={() => removeLine(line.id)}
                   />
                 ))}
                 <button
@@ -303,6 +344,9 @@ export default function App() {
                     selectedOutputs={outputDevicesOf(line.id)}
                     onAddOutput={(d) => addOutputTo(line.id, d)}
                     onRemoveOutput={(d) => removeOutputFrom(line.id, d)}
+                    synced={syncedLines.has(line.id)}
+                    onToggleSync={() => toggleSync(line.id)}
+                    syncPartnerNames={syncPartnerNames(line.id)}
                     onSetInput={(d) => void api.setLineInput(line.id, d).then(setConfig)}
                     onGain={(g) => {
                       patch((c) => {
@@ -332,7 +376,7 @@ export default function App() {
                       });
                       void api.updateLineMeta(line.id, name, line.color);
                     }}
-                    onRemove={() => void api.removeLine(line.id).then(setConfig)}
+                    onRemove={() => removeLine(line.id)}
                   />
                 ))}
                 <button

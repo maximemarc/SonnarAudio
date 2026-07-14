@@ -75,3 +75,11 @@ export const SpeakerOffIcon = () => (
     <path d="m22 9-6 6M16 9l6 6" />
   </svg>
 );
+
+export const LinkIcon = () => (
+  <svg {...S}>
+    <path d="M9.5 14.5 14.5 9.5" />
+    <path d="M8 16a3.5 3.5 0 0 1 0-5l2-2a3.5 3.5 0 0 1 5 5" />
+    <path d="M16 8a3.5 3.5 0 0 1 0 5l-2 2a3.5 3.5 0 0 1-5-5" />
+  </svg>
+);
