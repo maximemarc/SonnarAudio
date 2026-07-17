@@ -14,8 +14,14 @@ tauri = { version = "2", features = ["tray-icon"] }
 # "Démarrer avec Windows" — registers/unregisters the app in the current
 # user's Run key, no admin rights needed.
 tauri-plugin-autostart = "2"
+# Native save/open dialogs — export/import config.
+tauri-plugin-dialog = "2"
+# System-wide hotkey (mic mute toggle) even when the window is hidden in the tray.
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Encodes extracted app icons as data-URIs for the frontend.
+base64 = "0.22"
 # Cross-platform audio I/O — uses WASAPI on Windows (shared mode).
 cpal = "0.15"
 # Lock-free SPSC ring buffers between capture threads and render threads.
@@ -31,6 +37,10 @@ windows = { version = "0.61", features = [
   "Win32_System_Com_StructuredStorage",
   "Win32_Devices_FunctionDiscovery",
   "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_WinRT",

@@ -48,6 +48,9 @@ pub struct AppInfo {
     pub pid: u32,
     /// True if the session is actively rendering right now.
     pub active: bool,
+    /// Small icon as a `data:image/bmp;base64,...` URI, when extraction
+    /// succeeds. `None` lets the frontend fall back to its glyph picker.
+    pub icon: Option<String>,
 }
 
 /// Best-effort COM init for the calling thread. MTA; a pre-existing STA on
@@ -143,6 +146,7 @@ fn list_apps_inner() -> Result<Vec<AppInfo>, String> {
                     label: capitalize(label),
                     pid,
                     active: false,
+                    icon: app_icon_data_uri(&path),
                 });
                 entry.active |= active;
             }
@@ -183,6 +187,8 @@ fn list_apps_inner() -> Result<Vec<AppInfo>, String> {
                     let key = name.to_lowercase();
                     if KNOWN_APPS.contains(&key.as_str()) && !by_exe.contains_key(&key) {
                         let label = name.trim_end_matches(".exe").trim_end_matches(".EXE");
+                        let icon = process_image_path(entry.th32ProcessID)
+                            .and_then(|p| app_icon_data_uri(&p));
                         by_exe.insert(
                             key,
                             AppInfo {
@@ -190,6 +196,7 @@ fn list_apps_inner() -> Result<Vec<AppInfo>, String> {
                                 label: capitalize(label),
                                 pid: entry.th32ProcessID,
                                 active: false,
+                                icon,
                             },
                         );
                     }
@@ -352,6 +359,163 @@ fn process_image_path(pid: u32) -> Option<String> {
         let _ = CloseHandle(handle);
         res.ok()?;
         Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 1b. App icons (SHGetFileInfo -> data URI) + foreground-window lookup
+// ---------------------------------------------------------------------------
+
+fn icon_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<String>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Extracts the small icon of an executable as a `data:image/bmp;base64,...`
+/// URI, cached for the process lifetime — icon extraction is a handful of
+/// GDI round-trips, too slow to redo on every ~10 s app-list poll.
+fn app_icon_data_uri(exe_path: &str) -> Option<String> {
+    if let Some(cached) = icon_cache().lock().ok()?.get(exe_path) {
+        return cached.clone();
+    }
+    let icon = extract_icon_data_uri(exe_path);
+    if let Ok(mut cache) = icon_cache().lock() {
+        cache.insert(exe_path.to_string(), icon.clone());
+    }
+    icon
+}
+
+fn extract_icon_data_uri(exe_path: &str) -> Option<String> {
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, DIB_RGB_COLORS,
+    };
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON};
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
+
+    unsafe {
+        let wide: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut shfi = SHFILEINFOW::default();
+        let res = SHGetFileInfoW(
+            windows::core::PCWSTR(wide.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut shfi),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_SMALLICON,
+        );
+        if res == 0 || shfi.hIcon.is_invalid() {
+            return None;
+        }
+        let hicon = shfi.hIcon;
+
+        let mut info = ICONINFO::default();
+        if GetIconInfo(hicon, &mut info).is_err() {
+            let _ = DestroyIcon(hicon);
+            return None;
+        }
+        if !info.hbmMask.is_invalid() {
+            let _ = DeleteObject(info.hbmMask.into());
+        }
+        if info.hbmColor.is_invalid() {
+            let _ = DestroyIcon(hicon);
+            return None;
+        }
+
+        let mut bmp = BITMAP::default();
+        let got_obj = GetObjectW(
+            info.hbmColor.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bmp as *mut BITMAP as *mut core::ffi::c_void),
+        );
+        if got_obj == 0 {
+            let _ = DeleteObject(info.hbmColor.into());
+            let _ = DestroyIcon(hicon);
+            return None;
+        }
+        let (w, h) = (bmp.bmWidth, bmp.bmHeight);
+        if w <= 0 || h <= 0 || w > 256 || h > 256 {
+            let _ = DeleteObject(info.hbmColor.into());
+            let _ = DestroyIcon(hicon);
+            return None;
+        }
+
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: h, // positive = bottom-up, matches GetDIBits' default output
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: DIB_RGB_COLORS.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let row_bytes = (w as usize) * 4;
+        let mut pixels = vec![0u8; row_bytes * h as usize];
+        let dc = GetDC(None);
+        let got = GetDIBits(
+            dc,
+            info.hbmColor,
+            0,
+            h as u32,
+            Some(pixels.as_mut_ptr() as *mut core::ffi::c_void),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+        ReleaseDC(None, dc);
+        let _ = DeleteObject(info.hbmColor.into());
+        let _ = DestroyIcon(hicon);
+        if got == 0 {
+            return None;
+        }
+
+        // Minimal on-disk BMP: 14-byte file header + 40-byte info header +
+        // the bottom-up BGRA pixel data GetDIBits just filled in.
+        let pixel_offset: u32 = 14 + 40;
+        let mut file = Vec::with_capacity(pixel_offset as usize + pixels.len());
+        file.extend_from_slice(b"BM");
+        file.extend_from_slice(&(pixel_offset + pixels.len() as u32).to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        file.extend_from_slice(&pixel_offset.to_le_bytes());
+        file.extend_from_slice(&40u32.to_le_bytes()); // BITMAPINFOHEADER size
+        file.extend_from_slice(&w.to_le_bytes());
+        file.extend_from_slice(&h.to_le_bytes());
+        file.extend_from_slice(&1u16.to_le_bytes()); // planes
+        file.extend_from_slice(&32u16.to_le_bytes()); // bpp
+        file.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+        file.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+        file.extend_from_slice(&0i32.to_le_bytes());
+        file.extend_from_slice(&0i32.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&pixels);
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&file);
+        Some(format!("data:image/bmp;base64,{b64}"))
+    }
+}
+
+/// Executable name of whatever window currently has focus — used to
+/// auto-switch mix profiles (see `main.rs`'s profile-watch thread).
+pub fn foreground_exe() -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        process_image_path(pid).map(|p| p.rsplit(['\\', '/']).next().unwrap_or(&p).to_string())
     }
 }
 

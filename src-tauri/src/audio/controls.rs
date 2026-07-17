@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use super::dsp::AtomicF32;
-use super::model::{AppConfig, DuckRule, EqBandCfg};
+use super::model::{reactivity_decay, AppConfig, DuckRule, EqBandCfg};
 
 /// Live parameters of one route (line -> output).
 pub struct RouteCtl {
@@ -32,6 +32,9 @@ pub struct LineCtl {
     pub peak: AtomicF32,
     /// Decaying envelope follower — the ducking side-chain signal.
     pub env: AtomicF32,
+    /// Per-block decay applied to `env` when this line acts as a ducking
+    /// SOURCE — derived from `LineConfig.duck_reactivity`.
+    pub duck_decay: AtomicF32,
     /// Parametric EQ bands — written by the UI, `try_read` each block by
     /// the capture callback, which rebuilds only the coefficients that
     /// actually moved.
@@ -86,6 +89,7 @@ impl Controls {
                         muted: AtomicBool::new(l.muted),
                         peak: AtomicF32::new(0.0),
                         env: AtomicF32::new(0.0),
+                        duck_decay: AtomicF32::new(reactivity_decay(&l.duck_reactivity)),
                         eq: RwLock::new(l.eq_bands.clone()),
                         routes,
                     }),

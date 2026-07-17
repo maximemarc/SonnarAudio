@@ -36,13 +36,14 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use audio::controls::Controls;
 use audio::dsp::EQ_FREQS;
 use audio::engine::{self, EngineMsg};
 use audio::model::{
-    new_id, AppConfig, DeviceList, DuckRule, EqBandCfg, EqPreset, LevelsPayload, LineConfig,
-    OutputConfig, Route, CURRENT_SCHEMA_VERSION,
+    new_id, reactivity_decay, AppConfig, DeviceList, DuckRule, EqBandCfg, EqPreset, LevelsPayload,
+    LineConfig, LineSnapshot, OutputConfig, Profile, Route, CURRENT_SCHEMA_VERSION,
 };
 
 /// Default parametric curve: the classic 5 flat bands.
@@ -155,6 +156,7 @@ fn default_config() -> AppConfig {
         apps: Vec::new(),
         cable_render_id: None,
         routes: vec![route(1.0)],
+        duck_reactivity: "normale".into(),
     };
     let mic = new_id("line");
     AppConfig {
@@ -178,6 +180,7 @@ fn default_config() -> AppConfig {
         }],
         master_gain: 1.0,
         eq_presets: Vec::new(),
+        profiles: Vec::new(),
         schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
@@ -499,6 +502,7 @@ fn add_line(name: String, color: String, kind: String, state: State<AppState>) -
             apps: Vec::new(),
             cable_render_id: None,
             routes,
+            duck_reactivity: "normale".into(),
         });
         cfg.clone()
     };
@@ -612,6 +616,74 @@ fn prune_unused_buses(cfg: &mut AppConfig) {
         .flat_map(|l| l.routes.iter().map(|r| r.output_id.clone()))
         .collect();
     cfg.outputs.retain(|o| used.contains(&o.id));
+}
+
+/// Find the output bus already bound to `device`, or create one. Shared by
+/// every command that resolves a device NAME into a bus id (profiles,
+/// streamer mode) — `set_line_outputs` keeps its own inline copy since it
+/// also needs the per-device gain-preservation pass around it.
+fn find_or_create_bus(cfg: &mut AppConfig, device: &str) -> String {
+    if let Some(o) = cfg.outputs.iter().find(|o| o.device == device) {
+        return o.id.clone();
+    }
+    let id = new_id("out");
+    let name = device.split(" (").next().unwrap_or(device).to_string();
+    cfg.outputs.push(OutputConfig {
+        id: id.clone(),
+        name,
+        device: device.to_string(),
+        gain: 1.0,
+        muted: false,
+    });
+    id
+}
+
+/// Apply a saved [`Profile`] onto the live config. Lines are matched by id
+/// (a profile saved before a line was deleted just skips that entry);
+/// outputs are resolved by device name, keeping a route's existing gain if
+/// that device is already selected. Ducking rules referencing a line that
+/// no longer exists are dropped rather than carried over as dangling refs.
+fn apply_profile_to_config(cfg: &mut AppConfig, profile: &Profile) {
+    for snap in &profile.lines {
+        let existing_gain_by_device: HashMap<String, f32> = cfg
+            .lines
+            .iter()
+            .find(|l| l.id == snap.line_id)
+            .into_iter()
+            .flat_map(|l| &l.routes)
+            .filter_map(|r| {
+                cfg.outputs
+                    .iter()
+                    .find(|o| o.id == r.output_id)
+                    .map(|o| (o.device.clone(), r.gain))
+            })
+            .collect();
+        let mut new_routes = Vec::with_capacity(snap.output_devices.len());
+        for device in snap.output_devices.iter().filter(|d| !d.is_empty()) {
+            let bus_id = find_or_create_bus(cfg, device);
+            let gain = existing_gain_by_device.get(device).copied().unwrap_or(1.0);
+            new_routes.push(Route {
+                output_id: bus_id,
+                gain,
+            });
+        }
+        if let Some(line) = cfg.lines.iter_mut().find(|l| l.id == snap.line_id) {
+            line.gain = snap.gain;
+            line.muted = snap.muted;
+            line.eq_bands = snap.eq_bands.clone();
+            line.routes = new_routes;
+        }
+    }
+    let line_ids: std::collections::HashSet<String> =
+        cfg.lines.iter().map(|l| l.id.clone()).collect();
+    cfg.ducking = profile
+        .ducking
+        .iter()
+        .filter(|d| line_ids.contains(&d.source_line) && line_ids.contains(&d.target_line))
+        .cloned()
+        .collect();
+    cfg.master_gain = profile.master_gain;
+    prune_unused_buses(cfg);
 }
 
 #[tauri::command]
@@ -773,6 +845,305 @@ fn set_autostart_enabled(enabled: bool, app: AppHandle) -> Result<(), String> {
     res.map_err(|e| e.to_string())
 }
 
+/// Global-shortcut handler (Ctrl+Alt+M): toggle every mic line's mute at
+/// once. Live, atomics-only — same "no rebuild" contract as `set_line_muted`,
+/// just fanned out to every mic and broadcast so the UI (which didn't
+/// initiate this) picks up the new state.
+fn toggle_all_mics(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        let any_unmuted = cfg.lines.iter().any(|l| l.kind == "mic" && !l.muted);
+        for line in cfg.lines.iter_mut().filter(|l| l.kind == "mic") {
+            line.muted = any_unmuted;
+        }
+        cfg.clone()
+    };
+    {
+        let controls = state.controls.read();
+        for line in cfg_after.lines.iter().filter(|l| l.kind == "mic") {
+            if let Some(ctl) = controls.lines.get(&line.id) {
+                ctl.muted.store(line.muted, Ordering::Relaxed);
+            }
+        }
+    }
+    persist(&state);
+    let _ = app.emit("config_updated", &cfg_after);
+}
+
+/// Per-route gain — the ceiling of item #2 (per-output gain) was already
+/// live in the render callback (`input.route.gain`); this was the only
+/// missing piece: a way to set it. Live, no rebuild.
+#[tauri::command]
+fn set_route_gain(line_id: String, output_id: String, gain: f32, state: State<AppState>) {
+    let gain = gain.clamp(0.0, 1.5);
+    {
+        let mut cfg = state.config.lock();
+        if let Some(line) = cfg.lines.iter_mut().find(|l| l.id == line_id) {
+            if let Some(route) = line.routes.iter_mut().find(|r| r.output_id == output_id) {
+                route.gain = gain;
+            }
+        }
+    }
+    if let Some(ctl) = state.controls.read().lines.get(&line_id) {
+        if let Some(route_ctl) = ctl.routes.get(&output_id) {
+            route_ctl.gain.set(gain);
+        }
+    }
+    persist(&state);
+}
+
+/// Ducking "réactivité" — how fast this line's side-chain envelope reacts
+/// when it's the SOURCE of a rule. Live: only the decay coefficient moves.
+#[tauri::command]
+fn set_line_duck_reactivity(id: String, level: String, state: State<AppState>) {
+    let level = match level.as_str() {
+        "douce" | "rapide" => level,
+        _ => "normale".to_string(),
+    };
+    {
+        let mut cfg = state.config.lock();
+        if let Some(line) = cfg.lines.iter_mut().find(|l| l.id == id) {
+            line.duck_reactivity = level.clone();
+        }
+    }
+    if let Some(ctl) = state.controls.read().lines.get(&id) {
+        ctl.duck_decay.set(reactivity_decay(&level));
+    }
+    persist(&state);
+}
+
+// ---------------------------------------------------------------------------
+// Commands — export / import config
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn export_config(app: AppHandle, state: State<AppState>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let cfg = state.config.lock().clone();
+    let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Configuration MixFlow", &["json"])
+        .set_file_name("mixflow-config.json")
+        .blocking_save_file()
+    else {
+        return Ok(None); // user cancelled
+    };
+    let path_buf = path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path_buf, json).map_err(|e| e.to_string())?;
+    Ok(Some(path_buf.display().to_string()))
+}
+
+#[tauri::command]
+fn import_config(app: AppHandle, state: State<AppState>) -> Result<Option<AppConfig>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Configuration MixFlow", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None); // user cancelled
+    };
+    let path_buf = path.into_path().map_err(|e| e.to_string())?;
+    let json = std::fs::read_to_string(&path_buf).map_err(|e| e.to_string())?;
+    let imported: AppConfig =
+        serde_json::from_str(&json).map_err(|e| format!("fichier invalide : {e}"))?;
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        *cfg = imported;
+        cfg.clone()
+    };
+    rebuild(&state);
+    Ok(Some(cfg_after))
+}
+
+// ---------------------------------------------------------------------------
+// Commands — profiles (save/apply a full mix state, optionally auto-switch)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn save_profile(name: String, trigger_exe: Option<String>, state: State<AppState>) -> AppConfig {
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        let lines: Vec<LineSnapshot> = cfg
+            .lines
+            .iter()
+            .map(|l| LineSnapshot {
+                line_id: l.id.clone(),
+                gain: l.gain,
+                muted: l.muted,
+                eq_bands: l.eq_bands.clone(),
+                output_devices: l
+                    .routes
+                    .iter()
+                    .filter_map(|r| {
+                        cfg.outputs
+                            .iter()
+                            .find(|o| o.id == r.output_id)
+                            .map(|o| o.device.clone())
+                    })
+                    .collect(),
+            })
+            .collect();
+        let ducking = cfg.ducking.clone();
+        let master_gain = cfg.master_gain;
+        cfg.profiles.push(Profile {
+            id: new_id("profile"),
+            name: name.trim().to_string(),
+            trigger_exe: trigger_exe.filter(|s| !s.trim().is_empty()),
+            lines,
+            ducking,
+            master_gain,
+        });
+        cfg.clone()
+    };
+    persist(&state);
+    cfg_after
+}
+
+#[tauri::command]
+fn apply_profile(id: String, state: State<AppState>) -> Result<AppConfig, String> {
+    let profile = {
+        let cfg = state.config.lock();
+        cfg.profiles
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| "profil introuvable".to_string())?
+    };
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        apply_profile_to_config(&mut cfg, &profile);
+        cfg.clone()
+    };
+    rebuild(&state);
+    Ok(cfg_after)
+}
+
+#[tauri::command]
+fn delete_profile(id: String, state: State<AppState>) -> AppConfig {
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        cfg.profiles.retain(|p| p.id != id);
+        cfg.clone()
+    };
+    persist(&state);
+    cfg_after
+}
+
+#[tauri::command]
+fn set_profile_trigger(
+    id: String,
+    trigger_exe: Option<String>,
+    state: State<AppState>,
+) -> AppConfig {
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        if let Some(p) = cfg.profiles.iter_mut().find(|p| p.id == id) {
+            p.trigger_exe = trigger_exe.filter(|s| !s.trim().is_empty());
+        }
+        cfg.clone()
+    };
+    persist(&state);
+    cfg_after
+}
+
+/// Auto-switch: called every ~2 s from a dedicated thread (see `main`) with
+/// the current foreground exe. Applies the first profile whose trigger
+/// matches, if it isn't already the active one.
+fn maybe_apply_triggered_profile(
+    app: &AppHandle,
+    active: &mut Option<String>,
+    foreground_exe: &str,
+) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let target = {
+        let cfg = state.config.lock();
+        cfg.profiles
+            .iter()
+            .find(|p| {
+                p.trigger_exe
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case(foreground_exe))
+                    .unwrap_or(false)
+            })
+            .map(|p| p.id.clone())
+    };
+    let Some(target_id) = target else {
+        return;
+    };
+    if active.as_deref() == Some(target_id.as_str()) {
+        return;
+    }
+    let profile = {
+        let cfg = state.config.lock();
+        cfg.profiles.iter().find(|p| p.id == target_id).cloned()
+    };
+    let Some(profile) = profile else {
+        return;
+    };
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        apply_profile_to_config(&mut cfg, &profile);
+        cfg.clone()
+    };
+    rebuild(&state);
+    let _ = app.emit("config_updated", &cfg_after);
+    *active = Some(target_id);
+}
+
+// ---------------------------------------------------------------------------
+// Commands — Mode Streamer
+// ---------------------------------------------------------------------------
+
+/// Adds `device` as an extra output on every line that doesn't already play
+/// to it — a one-click way to send the whole mix to a dedicated "stream"
+/// virtual cable, on top of each line's normal (personal-listening)
+/// outputs. No engine changes needed: this is exactly the fan-out +
+/// per-route-gain machinery every line already has, just applied in bulk.
+#[tauri::command]
+fn enable_streamer_mode(device: String, state: State<AppState>) -> AppConfig {
+    let cfg_after = {
+        let mut cfg = state.config.lock();
+        let bus_id = find_or_create_bus(&mut cfg, &device);
+        for line in &mut cfg.lines {
+            if !line.routes.iter().any(|r| r.output_id == bus_id) {
+                line.routes.push(Route {
+                    output_id: bus_id.clone(),
+                    gain: 1.0,
+                });
+            }
+        }
+        cfg.clone()
+    };
+    rebuild(&state);
+    cfg_after
+}
+
+// ---------------------------------------------------------------------------
+// Commands — update check
+// ---------------------------------------------------------------------------
+
+/// Deliberately NOT wired to `tauri-plugin-updater` yet: that plugin refuses
+/// to initialize at all without a real signing pubkey + release endpoint in
+/// `tauri.conf.json` (verified empirically — it panics the whole app on
+/// startup otherwise), and this repo has neither (no GitHub remote/releases
+/// configured — see CLAUDE.md). Once both exist, swap this stub for the
+/// plugin's `updater().check()` call; the frontend contract (`Result<Option<
+/// String>, String>`, `Some(version)` | `None` = up to date) is already
+/// future-proofed for that.
+#[tauri::command]
+fn check_for_update() -> Result<Option<String>, String> {
+    Err("mise à jour automatique non configurée pour ce build (nécessite un remote GitHub avec des releases publiées et une clé de signature)".into())
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -783,6 +1154,16 @@ fn main() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        toggle_all_mics(app);
+                    }
+                })
+                .build(),
+        )
         // Discord-like behavior: closing the window hides it to the tray,
         // the audio engine keeps running in the background.
         .on_window_event(|window, event| {
@@ -838,6 +1219,15 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            // Ctrl+Alt+M: toggle every mic's mute, even with the window
+            // hidden in the tray. Best-effort — another app may already own
+            // the combo; that's a `notice`-worthy situation, not fatal.
+            let mic_mute_shortcut =
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyM);
+            if let Err(e) = app.global_shortcut().register(mic_mute_shortcut) {
+                eprintln!("[mixflow] raccourci Ctrl+Alt+M indisponible : {e}");
+            }
 
             let config_path = app
                 .path()
@@ -899,6 +1289,7 @@ fn main() {
                     apps: Vec::new(),
                     cable_render_id: None,
                     routes,
+                    duck_reactivity: "normale".into(),
                 });
             }
             // Migration : chaque ligne doit sortir quelque part. Les routes
@@ -1002,6 +1393,72 @@ fn main() {
                 })
                 .expect("failed to spawn persist thread");
 
+            // Device-health watch: a stream that errors mid-session (device
+            // unplugged) only logs to stderr today (see `stream_err` in
+            // engine.rs) — the UI never finds out. Polling the live device
+            // list against what's actually configured surfaces that as an
+            // explicit warning instead of the mix just going silent.
+            let handle3 = app.handle().clone();
+            std::thread::Builder::new()
+                .name("mixflow-health".into())
+                .spawn(move || {
+                    let mut last_warnings: Vec<String> = Vec::new();
+                    loop {
+                        std::thread::sleep(Duration::from_secs(3));
+                        let state = handle3.state::<AppState>();
+                        let cfg = state.config.lock().clone();
+                        let host = cpal::default_host();
+                        let live_inputs: std::collections::HashSet<String> = host
+                            .input_devices()
+                            .map(|it| it.filter_map(|d| d.name().ok()).collect())
+                            .unwrap_or_default();
+                        let live_outputs: std::collections::HashSet<String> = host
+                            .output_devices()
+                            .map(|it| it.filter_map(|d| d.name().ok()).collect())
+                            .unwrap_or_default();
+                        let mut warnings = Vec::new();
+                        for line in &cfg.lines {
+                            if let Some(d) = &line.input_device {
+                                if !live_inputs.contains(d) {
+                                    warnings.push(format!(
+                                        "« {} » : périphérique d'entrée débranché (\"{d}\")",
+                                        line.name
+                                    ));
+                                }
+                            }
+                        }
+                        for out in &cfg.outputs {
+                            if !out.device.is_empty() && !live_outputs.contains(&out.device) {
+                                warnings.push(format!(
+                                    "« {} » : périphérique de sortie débranché (\"{}\")",
+                                    out.name, out.device
+                                ));
+                            }
+                        }
+                        if warnings != last_warnings {
+                            let _ = handle3.emit("device_warnings", &warnings);
+                            last_warnings = warnings;
+                        }
+                    }
+                })
+                .expect("failed to spawn health thread");
+
+            // Profile auto-switch: which app has focus, checked every 2 s
+            // against each profile's trigger_exe.
+            let handle4 = app.handle().clone();
+            std::thread::Builder::new()
+                .name("mixflow-profiles".into())
+                .spawn(move || {
+                    let mut active: Option<String> = None;
+                    loop {
+                        std::thread::sleep(Duration::from_secs(2));
+                        if let Some(fg) = winapps::foreground_exe() {
+                            maybe_apply_triggered_profile(&handle4, &mut active, &fg);
+                        }
+                    }
+                })
+                .expect("failed to spawn profile-watch thread");
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1023,7 +1480,17 @@ fn main() {
             set_master_gain,
             set_duck_rules,
             get_autostart_enabled,
-            set_autostart_enabled
+            set_autostart_enabled,
+            set_route_gain,
+            set_line_duck_reactivity,
+            export_config,
+            import_config,
+            save_profile,
+            apply_profile,
+            delete_profile,
+            set_profile_trigger,
+            enable_streamer_mode,
+            check_for_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running MixFlow");

@@ -83,6 +83,7 @@ export default function MasterStrip({ value, onChange, unrouted, onRefresh }: Pr
               }}
             >
               {app.active && <span className="app-dot" />}
+              {app.icon && <img className="app-icon" src={app.icon} alt="" />}
               {app.label}
             </span>
           ))}

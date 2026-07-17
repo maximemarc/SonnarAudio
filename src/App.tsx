@@ -19,6 +19,8 @@ import MasterStrip from "./components/MasterStrip";
 import ChatMix from "./components/ChatMix";
 import DuckingPanel from "./components/DuckingPanel";
 import EqPage from "./components/EqPage";
+import ProfilesPanel from "./components/ProfilesPanel";
+import DeviceSelect from "./components/DeviceSelect";
 import logo from "./assets/logo.png";
 
 export default function App() {
@@ -34,6 +36,9 @@ export default function App() {
   // vers un nouveau casque). Purement une commodité d'UI, pas persisté.
   const [syncedLines, setSyncedLines] = useState<Set<string>>(() => new Set());
   const [autostart, setAutostart] = useState(false);
+  // Live from the backend's health-check thread — a configured device that
+  // vanished mid-session (see main.rs's "mixflow-health" thread).
+  const [deviceWarnings, setDeviceWarnings] = useState<string[]>([]);
 
   const refreshApps = useCallback(() => {
     api
@@ -53,10 +58,16 @@ export default function App() {
     const t = setInterval(refreshApps, 10_000);
     window.addEventListener("focus", refreshApps);
     const unlisten = listen<EngineStatus>("engine_status", (e) => setStatus(e.payload));
+    // Config changes that don't originate from this window — the global
+    // mic-mute hotkey, or a profile the backend auto-switched to.
+    const unlistenCfg = listen<AppConfig>("config_updated", (e) => setConfig(e.payload));
+    const unlistenWarn = listen<string[]>("device_warnings", (e) => setDeviceWarnings(e.payload));
     return () => {
       clearInterval(t);
       window.removeEventListener("focus", refreshApps);
       void unlisten.then((f) => f());
+      void unlistenCfg.then((f) => f());
+      void unlistenWarn.then((f) => f());
     };
   }, [refreshApps]);
 
@@ -75,6 +86,10 @@ export default function App() {
 
   const appLines = config.lines.filter((l) => l.kind !== "mic");
   const micLines = config.lines.filter((l) => l.kind === "mic");
+  const appIcons: Record<string, string> = {};
+  for (const a of apps) {
+    if (a.icon) appIcons[a.exe.toLowerCase()] = a.icon;
+  }
 
   // Périphériques physiques vers lesquels joue une ligne (fan-out possible,
   // via ses bus cachés).
@@ -135,6 +150,83 @@ export default function App() {
       setAutostart(!next);
       setError(String(e));
     });
+  };
+
+  // Périphérique -> gain [0..1.5] pour CETTE ligne (équilibre entre sorties).
+  const outputGainsOf = (lineId: string): Record<string, number> => {
+    const line = config.lines.find((l) => l.id === lineId);
+    if (!line) return {};
+    const map: Record<string, number> = {};
+    for (const r of line.routes) {
+      const dev = config.outputs.find((o) => o.id === r.output_id)?.device;
+      if (dev) map[dev] = r.gain;
+    }
+    return map;
+  };
+  const setOutputGain = (lineId: string, device: string, gain: number) => {
+    const line = config.lines.find((l) => l.id === lineId);
+    const outputId = line?.routes.find(
+      (r) => config.outputs.find((o) => o.id === r.output_id)?.device === device,
+    )?.output_id;
+    if (!outputId) return;
+    patch((c) => {
+      const route = c.lines
+        .find((x) => x.id === lineId)
+        ?.routes.find((r) => r.output_id === outputId);
+      if (route) route.gain = gain;
+      return c;
+    });
+    void api.setRouteGain(lineId, outputId, gain);
+  };
+
+  const setSourceReactivity = (lineId: string, level: "douce" | "normale" | "rapide") => {
+    patch((c) => {
+      const l = c.lines.find((x) => x.id === lineId);
+      if (l) l.duck_reactivity = level;
+      return c;
+    });
+    void api.setLineDuckReactivity(lineId, level);
+  };
+
+  // -- profils, export/import, mode streamer, mises à jour --------------------
+
+  const handleSaveProfile = (name: string) => void api.saveProfile(name, null).then(setConfig);
+  const handleApplyProfile = (id: string) =>
+    api
+      .applyProfile(id)
+      .then(setConfig)
+      .catch((e) => setError(String(e)));
+  const handleDeleteProfile = (id: string) => void api.deleteProfile(id).then(setConfig);
+  const handleSetProfileTrigger = (id: string, triggerExe: string | null) =>
+    void api.setProfileTrigger(id, triggerExe).then(setConfig);
+
+  const handleExportConfig = () => {
+    api
+      .exportConfig()
+      .then((path) => path && setError(`Configuration exportée : ${path}`))
+      .catch((e) => setError(String(e)));
+  };
+  const handleImportConfig = () => {
+    api
+      .importConfig()
+      .then((cfg) => {
+        if (cfg) {
+          setConfig(cfg);
+          refreshDevices();
+          refreshApps();
+        }
+      })
+      .catch((e) => setError(String(e)));
+  };
+
+  const handleEnableStreamer = (device: string) =>
+    void api.enableStreamerMode(device).then(setConfig);
+
+  const handleCheckUpdate = () => {
+    api
+      .checkForUpdate()
+      .then((v) => setError(v ? `Mise à jour disponible : v${v}` : "MixFlow est à jour."))
+      .catch((e) => setError(String(e)));
   };
 
   // "Router vers" (dock) et drag-and-drop passent tous deux par ici.
@@ -198,13 +290,44 @@ export default function App() {
           >
             ⟳ Périphériques
           </button>
+          <DeviceSelect
+            devices={devices.outputs}
+            value=""
+            placeholder="🎥 Mode Streamer…"
+            role="speaker"
+            onChange={(d) => d && handleEnableStreamer(d)}
+          />
+          <button
+            className="btn-ghost"
+            onClick={handleExportConfig}
+            title="Exporter la configuration"
+          >
+            Exporter
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={handleImportConfig}
+            title="Importer une configuration"
+          >
+            Importer
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={handleCheckUpdate}
+            title="Vérifier les mises à jour"
+          >
+            Mises à jour
+          </button>
         </div>
       </header>
 
-      {status && status.warnings.length > 0 && (
+      {(status?.warnings.length ?? 0) + deviceWarnings.length > 0 && (
         <div className="warn-banner">
-          {status.warnings.map((w, i) => (
-            <div key={i}>{w}</div>
+          {(status?.warnings ?? []).map((w, i) => (
+            <div key={`e${i}`}>{w}</div>
+          ))}
+          {deviceWarnings.map((w, i) => (
+            <div key={`d${i}`}>{w}</div>
           ))}
         </div>
       )}
@@ -277,6 +400,9 @@ export default function App() {
                     synced={syncedLines.has(line.id)}
                     onToggleSync={() => toggleSync(line.id)}
                     syncPartnerNames={syncPartnerNames(line.id)}
+                    outputGains={outputGainsOf(line.id)}
+                    onSetOutputGain={(d, g) => setOutputGain(line.id, d, g)}
+                    appIcons={appIcons}
                     onSetInput={(d) => void api.setLineInput(line.id, d).then(setConfig)}
                     runningExes={apps.map((a) => a.exe.toLowerCase())}
                     onDropApp={(exe) => assignAppTo(line.id, exe)}
@@ -368,6 +494,9 @@ export default function App() {
                     synced={syncedLines.has(line.id)}
                     onToggleSync={() => toggleSync(line.id)}
                     syncPartnerNames={syncPartnerNames(line.id)}
+                    outputGains={outputGainsOf(line.id)}
+                    onSetOutputGain={(d, g) => setOutputGain(line.id, d, g)}
+                    appIcons={appIcons}
                     onSetInput={(d) => void api.setLineInput(line.id, d).then(setConfig)}
                     onGain={(g) => {
                       patch((c) => {
@@ -424,6 +553,19 @@ export default function App() {
                 });
                 void api.setDuckRules(rules);
               }}
+              onSetSourceReactivity={setSourceReactivity}
+            />
+          </section>
+
+          <section className="panel">
+            <h2>Profils</h2>
+            <ProfilesPanel
+              config={config}
+              apps={apps}
+              onSave={handleSaveProfile}
+              onApply={handleApplyProfile}
+              onDelete={handleDeleteProfile}
+              onSetTrigger={handleSetProfileTrigger}
             />
           </section>
         </main>

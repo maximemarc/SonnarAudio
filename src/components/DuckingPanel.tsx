@@ -9,9 +9,11 @@ import type { AppConfig, DuckRule } from "../types";
 interface Props {
   config: AppConfig;
   onChange: (rules: DuckRule[]) => void;
+  /** Reactivity is a property of the SOURCE line, not the rule. */
+  onSetSourceReactivity: (lineId: string, level: "douce" | "normale" | "rapide") => void;
 }
 
-export default function DuckingPanel({ config, onChange }: Props) {
+export default function DuckingPanel({ config, onChange, onSetSourceReactivity }: Props) {
   const { lines, ducking } = config;
   const lineName = (id: string) => lines.find((l) => l.id === id)?.name ?? "?";
 
@@ -74,6 +76,21 @@ export default function DuckingPanel({ config, onChange }: Props) {
             onChange={(e) => update(i, { amount: Number(e.target.value) })}
           />
           <span className="duck-amount">{Math.round(rule.amount * 100)}%</span>
+          <select
+            className="duck-reactivity"
+            title="Réactivité — vitesse à laquelle le duck relâche quand la source se tait"
+            value={lines.find((l) => l.id === rule.source_line)?.duck_reactivity ?? "normale"}
+            onChange={(e) =>
+              onSetSourceReactivity(
+                rule.source_line,
+                e.target.value as "douce" | "normale" | "rapide",
+              )
+            }
+          >
+            <option value="douce">Douce</option>
+            <option value="normale">Normale</option>
+            <option value="rapide">Rapide</option>
+          </select>
           <button
             className="btn-remove"
             title="Supprimer la règle"

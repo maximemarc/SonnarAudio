@@ -76,7 +76,7 @@ mixflow/
 │   └── components/
 │       ├── ChannelStrip.tsx · MasterStrip.tsx · ChatMix.tsx
 │       ├── EqPage.tsx · DeviceSelect.tsx · VSlider.tsx
-│       └── DuckingPanel.tsx · Icons.tsx · pickIcon.tsx
+│       └── DuckingPanel.tsx · ProfilesPanel.tsx · Icons.tsx · pickIcon.tsx
 └── src-tauri/                    # Backend Rust
     ├── Cargo.toml · rustfmt.toml · tauri.conf.json · build.rs
     ├── capabilities/default.json
@@ -166,7 +166,21 @@ et **renomme leur côté "rendu" au nom du canal** — aucune manipulation de
 - ✅ Persistance JSON débouncée (garde-fous : écart mini entre points EQ,
   `schema_version` pour les futures migrations)
 - ✅ Réduction dans le tray (le mix continue en arrière-plan)
-- ✅ Avertissements en direct (périphérique manquant, stream en échec)
+- ✅ Avertissements en direct (périphérique manquant, stream en échec, et
+  débranchement détecté en cours de session)
+- ✅ Démarrage automatique avec Windows
+- ✅ Gain indépendant par sortie (équilibre casque/enceintes ou mix
+  perso/stream, dès 2 sorties simultanées sur un canal)
+- ✅ Icônes réelles des applications détectées
+- ✅ Export / import de la configuration (fichier JSON, dialogues natifs)
+- ✅ Profils de mix sauvegardés, avec auto-application quand un jeu/app
+  choisi passe au premier plan
+- ✅ Raccourci global Ctrl+Alt+M : coupe/réactive tous les micros, même
+  fenêtre réduite dans le tray
+- ✅ Mode Streamer : envoie le mix vers une sortie dédiée en un clic
+- ✅ Réactivité du ducking réglable (douce / normale / rapide) par canal
+- ⏳ Mise à jour automatique : câblage prêt côté client, en attente d'un
+  remote GitHub avec releases + clé de signature
 
 ## 5. Tests & qualité
 

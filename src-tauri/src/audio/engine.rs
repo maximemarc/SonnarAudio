@@ -295,7 +295,8 @@ impl CaptureState {
         if peak > self.ctl.peak.get() {
             self.ctl.peak.set(peak);
         }
-        self.ctl.env.set((self.ctl.env.get() * 0.90).max(peak));
+        let decay = self.ctl.duck_decay.get();
+        self.ctl.env.set((self.ctl.env.get() * decay).max(peak));
 
         // Fan out to every routed output. If a ring is full (render device
         // stalled, or its clock runs slower), the excess is dropped — the

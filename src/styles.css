@@ -445,6 +445,49 @@ body {
   gap: 4px;
 }
 
+/* Icône réelle d'une app (SHGetFileInfo), dans les chips de canal et le pool. */
+.app-icon {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* Équilibre par sortie (fan-out) — un slider fin par périphérique. */
+.route-gains {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: -2px;
+}
+.route-gain-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.route-gain-label {
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60px;
+  flex: none;
+}
+.route-gain-row input[type="range"] {
+  flex: 1;
+  height: 3px;
+  accent-color: var(--accent);
+}
+.route-gain-value {
+  font-size: 10px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  width: 30px;
+  text-align: right;
+}
+
 /* chips du pool "Apps à router" (sous le Master) */
 .app-pool {
   cursor: grab;
@@ -1221,6 +1264,34 @@ button {
   font-size: 12px;
   padding: 4px 0;
   line-height: 1.5;
+}
+
+/* -- profils ---------------------------------------------------------------------------------------- */
+
+.profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 11px;
+  background: var(--strip);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.profile-name {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 100px;
+}
+.profile-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 /* -- page Égaliseur -------------------------------------------------------------------------------- */

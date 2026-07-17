@@ -36,6 +36,9 @@ interface Props {
   synced: boolean;
   onToggleSync: () => void;
   syncPartnerNames: string[];
+  /** device -> gain [0..1.5] for THIS line's routes (fan-out balance). */
+  outputGains: Record<string, number>;
+  onSetOutputGain: (device: string, gain: number) => void;
   onSetInput: (device: string | null) => void;
   onGain: (gain: number) => void;
   onMute: (muted: boolean) => void;
@@ -48,6 +51,8 @@ interface Props {
   onRemoveApp?: (exe: string) => void;
   /** Exécutables actuellement détectés (les apps fermées sont masquées). */
   runningExes?: string[];
+  /** exe (minuscules) -> icône `data:image/bmp;base64,...`, quand connue. */
+  appIcons?: Record<string, string>;
 }
 
 export default function ChannelStrip({
@@ -60,6 +65,8 @@ export default function ChannelStrip({
   synced,
   onToggleSync,
   syncPartnerNames,
+  outputGains,
+  onSetOutputGain,
   onSetInput,
   onGain,
   onMute,
@@ -69,6 +76,7 @@ export default function ChannelStrip({
   onDropApp,
   onRemoveApp,
   runningExes = [],
+  appIcons = {},
 }: Props) {
   const [name, setName] = useState(line.name);
   const [dragOver, setDragOver] = useState(false);
@@ -178,6 +186,28 @@ export default function ChannelStrip({
         role="speaker"
         onChange={(d) => d && onAddOutput(d)}
       />
+      {/* Équilibre entre sorties (casque vs enceintes, ou mix perso vs
+          stream) — n'a de sens qu'à partir de 2 sorties simultanées. */}
+      {selectedOutputs.length > 1 && (
+        <div className="route-gains">
+          {selectedOutputs.map((d) => (
+            <div className="route-gain-row" key={d}>
+              <span className="route-gain-label" title={d}>
+                {shortDeviceName(d)}
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={150}
+                step={5}
+                value={Math.round((outputGains[d] ?? 1) * 100)}
+                onChange={(e) => onSetOutputGain(d, Number(e.target.value) / 100)}
+              />
+              <span className="route-gain-value">{Math.round((outputGains[d] ?? 1) * 100)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
       {syncPartnerNames.length > 0 && (
         <div className="sync-hint">Synchronisé avec {syncPartnerNames.join(", ")}</div>
       )}
@@ -251,6 +281,9 @@ export default function ChannelStrip({
                   e.dataTransfer.effectAllowed = "copy";
                 }}
               >
+                {appIcons[exe.toLowerCase()] && (
+                  <img className="app-icon" src={appIcons[exe.toLowerCase()]} alt="" />
+                )}
                 {exe.replace(/\.exe$/i, "")}
                 <button
                   className="strip-app-x"

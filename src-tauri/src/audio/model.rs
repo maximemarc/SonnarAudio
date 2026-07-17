@@ -57,6 +57,11 @@ pub struct LineConfig {
     pub cable_render_id: Option<String>,
     #[serde(default)]
     pub routes: Vec<Route>,
+    /// How fast this line's ducking side-chain reacts when it is the
+    /// SOURCE of a rule: "douce" | "normale" | "rapide". Governs the
+    /// envelope-follower decay in the capture callback.
+    #[serde(default = "default_reactivity")]
+    pub duck_reactivity: String,
 }
 
 /// An output bus bound to a physical render device (headphones, speakers...).
@@ -104,6 +109,38 @@ pub struct EqPreset {
     pub bands: Vec<EqBandCfg>,
 }
 
+/// One line's settings captured into a [`Profile`] — everything a profile
+/// can restore, keyed by the line's (stable) id. Output devices are stored
+/// by NAME rather than bus id: buses are recreated on demand (see
+/// `set_line_outputs`), so a name survives the bus being pruned/recreated
+/// between when the profile was saved and when it's applied.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LineSnapshot {
+    pub line_id: String,
+    pub gain: f32,
+    pub muted: bool,
+    pub eq_bands: Vec<EqBandCfg>,
+    pub output_devices: Vec<String>,
+}
+
+/// A saved mix state, optionally auto-applied when `trigger_exe` becomes the
+/// foreground app (e.g. a game launcher). Lines that no longer exist when
+/// the profile is applied are skipped rather than erroring — profiles are a
+/// convenience snapshot, not a strict topology contract.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub trigger_exe: Option<String>,
+    #[serde(default)]
+    pub lines: Vec<LineSnapshot>,
+    #[serde(default)]
+    pub ducking: Vec<DuckRule>,
+    #[serde(default = "default_gain")]
+    pub master_gain: f32,
+}
+
 /// Bump when a migration needs to distinguish "field was never set" from
 /// "field was intentionally cleared" — the shape-based checks in `main.rs`'s
 /// startup migrations (`eq_bands.is_empty()`, etc.) are self-guarding and
@@ -126,6 +163,9 @@ pub struct AppConfig {
     /// User-saved EQ presets.
     #[serde(default)]
     pub eq_presets: Vec<EqPreset>,
+    /// User-saved mix profiles (see [`Profile`]).
+    #[serde(default)]
+    pub profiles: Vec<Profile>,
     /// Absent/0 on any config saved before this field existed. Set to
     /// `CURRENT_SCHEMA_VERSION` once startup migrations have run.
     #[serde(default)]
@@ -140,6 +180,19 @@ fn default_kind() -> String {
 }
 fn default_color() -> String {
     "#8b5cf6".into()
+}
+fn default_reactivity() -> String {
+    "normale".into()
+}
+
+/// Envelope-decay coefficient (per audio block) for a ducking reactivity
+/// level. Lower = faster release (the side-chain gate lets go sooner).
+pub fn reactivity_decay(level: &str) -> f32 {
+    match level {
+        "rapide" => 0.75,
+        "douce" => 0.96,
+        _ => 0.90, // "normale" — the original hardcoded value
+    }
 }
 
 /// Payload returned by `list_devices`.

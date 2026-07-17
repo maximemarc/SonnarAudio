@@ -30,6 +30,8 @@ export interface LineConfig {
   /** MMDevice id of the cable's render side (backend cache). */
   cable_render_id: string | null;
   routes: Route[];
+  /** Ducking side-chain reactivity when this line is a rule's SOURCE. */
+  duck_reactivity: "douce" | "normale" | "rapide" | string;
 }
 
 /** Result of assign_app_to_line: config + optional non-fatal notice. */
@@ -73,8 +75,29 @@ export interface AppConfig {
   master_gain: number;
   /** User-saved EQ presets (built-ins live in BUILTIN_EQ_PRESETS). */
   eq_presets: EqPreset[];
+  /** User-saved mix profiles — see `Profile`. */
+  profiles: Profile[];
   /** Config schema version, bumped by the backend when a migration needs it. */
   schema_version: number;
+}
+
+/** One line's settings captured into a `Profile`, by (stable) line id. */
+export interface LineSnapshot {
+  line_id: string;
+  gain: number;
+  muted: boolean;
+  eq_bands: EqBand[];
+  output_devices: string[];
+}
+
+/** A saved mix state, optionally auto-applied when `trigger_exe` gets focus. */
+export interface Profile {
+  id: string;
+  name: string;
+  trigger_exe: string | null;
+  lines: LineSnapshot[];
+  ducking: DuckRule[];
+  master_gain: number;
 }
 
 const b = (freq: number, gain: number): EqBand => ({ freq, gain });
@@ -166,6 +189,8 @@ export interface AppInfo {
   label: string;
   pid: number;
   active: boolean;
+  /** `data:image/bmp;base64,...` small icon, when extraction succeeded. */
+  icon: string | null;
 }
 
 /** Labels of the 5 EQ bands (must match dsp::EQ_FREQS on the Rust side). */

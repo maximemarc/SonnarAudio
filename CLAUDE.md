@@ -116,9 +116,58 @@ eq_bands`, freq 20-20k / gain ±12 dB, Q=1, écart mini `MIN_BAND_FREQ_RATIO`
   haut-parleurs) et `prune_unused_buses` nettoie les bus devenus orphelins.
   Chaque tranche a sa section « Sortie(s) » (chips + menu "+ ajouter").
   `set_line_output` (singulier), `add_output`, `remove_output`,
-  `set_route`, `set_output_device`, `rename_output`, `set_route_gain`,
-  `set_output_gain`, `set_output_muted` ont été supprimés (relents de
-  l'ancienne UI matrice/bus visibles, plus aucun appelant côté UI).
+  `set_route`, `set_output_device`, `rename_output`, `set_output_gain`,
+  `set_output_muted` ont été supprimés (relents de l'ancienne UI
+  matrice/bus visibles, plus aucun appelant côté UI). `set_route_gain`
+  existe à nouveau (réintroduit) : gain par sortie d'UNE ligne (pas par
+  bus global), exposé dans `ChannelStrip` seulement à partir de 2 sorties
+  simultanées (fan-out) — voir `LineCtl.routes: HashMap<output_id,
+RouteCtl>` dans `controls.rs`, déjà lu dans `RenderState::render`
+  avant même que la commande existe.
+- **Mode Streamer** : pas de second bus de mix dans le moteur — juste la
+  commande `enable_streamer_mode(device)` qui ajoute ce périphérique comme
+  route supplémentaire sur CHAQUE ligne (find-or-create bus), puis
+  s'appuie sur le gain par sortie ci-dessus pour équilibrer mix perso vs
+  mix diffusé. Zéro changement dans `engine.rs`.
+- **Profils** (`AppConfig.profiles: Vec<Profile>`) : snapshot par ligne
+  (gain/mute/EQ/sorties par NOM de périphérique, pas par bus id — voir
+  `LineSnapshot`) + ducking + master. `apply_profile_to_config` (main.rs)
+  résout les sorties via `find_or_create_bus`, ignore les lignes/règles
+  dont l'id n'existe plus. Thread `mixflow-profiles` (2 s) compare
+  `winapps::foreground_exe()` au `trigger_exe` de chaque profil et
+  applique automatiquement (émet `config_updated` — voir plus bas).
+- **Raccourci global Ctrl+Alt+M** (`tauri-plugin-global-shortcut`) :
+  bascule le mute de TOUTES les lignes `kind == "mic"` d'un coup (état
+  "any unmuted" → tout couper, sinon tout réactiver). Live (atomics),
+  pas de rebuild. Comme ce déclencheur ne vient pas de l'UI, il émet
+  `config_updated` (payload `AppConfig`) — App.tsx écoute cet événement
+  pour rester synchro, même mécanisme utilisé par l'auto-switch de
+  profil ci-dessus.
+- **Santé des périphériques** : thread `mixflow-health` (3 s) compare la
+  liste cpal actuelle aux périphériques réellement configurés (lignes +
+  bus) et émet `device_warnings: string[]` (mergé dans le même
+  `warn-banner` que `engine_status` côté frontend) quand un périphérique
+  configuré disparaît en cours de session — `stream_err` (engine.rs) ne
+  fait toujours qu'un `eprintln!`, ce thread est le seul filet côté UI.
+- **Ducking réglable** : `LineConfig.duck_reactivity` ("douce" | "normale"
+  | "rapide") pilote `LineCtl.duck_decay` (coefficient de décroissance du
+  suiveur d'enveloppe, appliqué dans `CaptureState::process`). Propriété
+  de la ligne SOURCE, pas de la règle — exposé dans `DuckingPanel` à côté
+  de chaque règle mais modifie la ligne source globalement.
+- **Export/import config** (`tauri-plugin-dialog`, dialogues natifs
+  appelés côté Rust via `blocking_save_file`/`blocking_pick_file` — pas
+  de package npm, tout passe par les commandes `export_config`/
+  `import_config`, même convention que le reste de l'app).
+- **Icônes d'apps réelles** (`winapps::app_icon_data_uri`) :
+  `SHGetFileInfoW` + `GetIconInfo`/`GetDIBits` → BMP en mémoire → data-URI
+  base64, caché par exe (`OnceLock<Mutex<HashMap<...>>>` — l'extraction
+  GDI est trop lente pour tourner à chaque poll de `list_apps` à 10 s).
+- **Mise à jour auto** : `tauri-plugin-updater` PAS enregistré (il refuse
+  de démarrer sans pubkey + endpoint valides dans `tauri.conf.json`, testé
+  — panique tout `main()`). `check_for_update` est un stub qui renvoie une
+  erreur explicative ; à câbler pour de vrai une fois un remote GitHub
+  avec des releases publiées et une clé de signature (`tauri signer
+generate`) disponibles.
 - **`add_line`/`remove_line`** font le travail COM bloquant (`winapps.rs`,
   qui spawn+join un thread par appel) **hors du verrou** `state.config` —
   motif à respecter pour toute nouvelle commande qui touche Windows Audio,
@@ -169,8 +218,11 @@ Deux onglets (state `view` dans App.tsx) :
 
 ## Reste à faire / idées
 
-- Mode Streamer (double mix personnel/diffusé).
-- Icônes réelles des apps (SHGetFileInfo) dans la zone « À router ».
 - Support de l'IID AudioPolicyConfig pré-21H2 pour vieux Windows 10.
-- Gain par sortie dans l'UI multi-sortie (le backend le préserve déjà par
-  périphérique dans `set_line_outputs`, juste pas de slider dédié encore).
+- Mise à jour automatique fonctionnelle (`tauri-plugin-updater`) — bloqué
+  tant qu'il n'y a pas de remote GitHub + releases + clé de signature.
+- Personnalisation du raccourci global (Ctrl+Alt+M est câblé en dur dans
+  `main.rs`, pas encore configurable depuis l'UI).
+- Un profil peut désigner une app absente/désinstallée comme déclencheur
+  sans erreur (comparaison silencieuse, jamais de match) — acceptable
+  pour l'instant mais pas signalé à l'utilisateur.
