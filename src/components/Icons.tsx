@@ -83,3 +83,15 @@ export const LinkIcon = () => (
     <path d="M16 8a3.5 3.5 0 0 1 0 5l-2 2a3.5 3.5 0 0 1-5-5" />
   </svg>
 );
+
+export const ChevronRightIcon = () => (
+  <svg {...S}>
+    <path d="M9 6l6 6-6 6" />
+  </svg>
+);
+
+export const ChevronDownIcon = () => (
+  <svg {...S}>
+    <path d="M6 10l6 6 6-6" />
+  </svg>
+);

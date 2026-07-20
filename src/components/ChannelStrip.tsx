@@ -17,7 +17,14 @@ import { curvePoints } from "../eqMath";
 import { useLiveLevel } from "../useLiveLevel";
 import DeviceSelect from "./DeviceSelect";
 import VSlider from "./VSlider";
-import { HeadphonesIcon, LinkIcon, MicIcon, SpeakerIcon, SpeakerOffIcon } from "./Icons";
+import {
+  ChevronRightIcon,
+  HeadphonesIcon,
+  LinkIcon,
+  MicIcon,
+  SpeakerIcon,
+  SpeakerOffIcon,
+} from "./Icons";
 import { pickIcon } from "./pickIcon";
 
 /** "Haut-parleurs (Creative Pebble X Plus)" -> "Haut-parleurs". */
@@ -85,7 +92,7 @@ export default function ChannelStrip({
   const active = line.input_device !== null;
   const hasCable = !isMic && line.input_device !== null && isVirtualDevice(line.input_device);
   const glowRef = useLiveLevel("lines", line.id);
-  const miniCurve = useMemo(() => curvePoints(line.eq_bands ?? [], 130, 46, 60), [line.eq_bands]);
+  const miniCurve = useMemo(() => curvePoints(line.eq_bands ?? [], 130, 40, 60), [line.eq_bands]);
   // Les assignations restent en config, mais seules les apps en cours
   // d'exécution sont affichées sur la tranche.
   const visibleApps = line.apps.filter((e) => runningExes.includes(e.toLowerCase()));
@@ -126,6 +133,29 @@ export default function ChannelStrip({
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
           spellCheck={false}
         />
+        {line.muted && <span className="muted-tag">Muet</span>}
+        {isMic ? (
+          // Retour micro : s'entendre (ou non) dans la sortie choisie.
+          <button
+            className={`btn-monitor btn-head ${line.muted ? "" : "on"}`}
+            title={
+              line.muted
+                ? "Activer le retour micro (s'entendre dans la sortie)"
+                : "Couper le retour micro"
+            }
+            onClick={() => onMute(!line.muted)}
+          >
+            <HeadphonesIcon />
+          </button>
+        ) : (
+          <button
+            className={`btn-mute btn-head ${line.muted ? "on" : ""}`}
+            title={line.muted ? "Réactiver" : "Couper (mute)"}
+            onClick={() => onMute(!line.muted)}
+          >
+            {line.muted ? <SpeakerOffIcon /> : <SpeakerIcon />}
+          </button>
+        )}
         <button className="btn-remove" title="Supprimer" onClick={onRemove}>
           ×
         </button>
@@ -218,11 +248,14 @@ export default function ChannelStrip({
         title="Égaliseur — cliquer pour éditer la courbe"
         onClick={onOpenEq}
       >
-        <svg viewBox="0 0 130 46" preserveAspectRatio="none" aria-hidden>
-          <line x1={0} y1={23} x2={130} y2={23} className="eq-grid-zero" />
+        <span className="strip-eq-head">
+          Égaliseur
+          <ChevronRightIcon />
+        </span>
+        <svg className="strip-eq-curve" viewBox="0 0 130 40" preserveAspectRatio="none" aria-hidden>
+          <line x1={0} y1={20} x2={130} y2={20} className="eq-grid-zero" />
           <polyline points={miniCurve} className="eq-line" />
         </svg>
-        <span className="strip-eq-label">EQ</span>
       </button>
 
       <div className="strip-main">
@@ -241,33 +274,11 @@ export default function ChannelStrip({
 
       <div className="strip-foot">
         <span className="strip-value">{Math.round(line.gain * 100)}%</span>
-        {isMic ? (
-          // Retour micro : s'entendre (ou non) dans la sortie choisie.
-          <button
-            className={`btn-monitor ${line.muted ? "" : "on"}`}
-            title={
-              line.muted
-                ? "Activer le retour micro (s'entendre dans la sortie)"
-                : "Couper le retour micro"
-            }
-            onClick={() => onMute(!line.muted)}
-          >
-            <HeadphonesIcon />
-          </button>
-        ) : (
-          <button
-            className={`btn-mute ${line.muted ? "on" : ""}`}
-            title={line.muted ? "Réactiver" : "Couper (mute)"}
-            onClick={() => onMute(!line.muted)}
-          >
-            {line.muted ? <SpeakerOffIcon /> : <SpeakerIcon />}
-          </button>
-        )}
       </div>
 
       {!isMic && (
         <div className="strip-apps-zone">
-          <span className="strip-label">Apps</span>
+          <span className="strip-label">Applications</span>
           <div className="strip-apps">
             {visibleApps.length === 0 && <span className="apps-hint">Déposer une app ici</span>}
             {visibleApps.map((exe) => (

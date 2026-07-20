@@ -5,6 +5,7 @@
  */
 
 import type { AppConfig, DuckRule } from "../types";
+import { ChevronDownIcon } from "./Icons";
 
 interface Props {
   config: AppConfig;
@@ -38,6 +39,9 @@ export default function DuckingPanel({ config, onChange, onSetSourceReactivity }
 
       {ducking.map((rule, i) => (
         <div className="duck-rule" key={i}>
+          <span className="duck-chevron">
+            <ChevronDownIcon />
+          </span>
           <span className="duck-label">Quand</span>
           <select
             value={rule.source_line}

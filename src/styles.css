@@ -4,22 +4,27 @@
    comme une vraie table de mixage. Un seul thème, assumé : c'est un outil
    pro-audio, la fenêtre native est déjà sombre.
    --accent est posé par React sur chaque tranche / ligne de matrice.
+   Palette alignée sur les tokens Nocturne du mockup Claude Design
+   (fond/texte/accent repris tels quels ; rail/strip/inset dérivés par
+   color-mix pour préserver les niveaux de profondeur de l'UI existante,
+   que le mockup — deux surfaces seulement — ne couvre pas). Pas de
+   couleurs ok/warn/danger côté mockup : celles-ci restent inchangées.
    ========================================================================== */
 
 :root {
-  --bg: #0a0c0f;
-  --rail: #0e1114;
-  --strip: #14181d;
-  --inset: #0b0e11;
-  --border: rgba(255, 255, 255, 0.07);
-  --text: #e8ecf2;
-  --dim: #7b8594;
-  --accent: #7c3aed; /* défaut, surchargé par tranche */
+  --bg: #161826;
+  --rail: color-mix(in srgb, #161826 55%, #232532 45%);
+  --strip: #232532;
+  --inset: color-mix(in srgb, #161826 88%, black 12%);
+  --border: color-mix(in srgb, #e9e9ed 16%, transparent);
+  --text: #e9e9ed;
+  --dim: #9397ab;
+  --accent: #9184d9; /* défaut, surchargé par tranche */
   --ok: #2dd4a7;
   --warn: #f5a524;
   --danger: #f0525f;
-  --radius: 10px;
-  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --radius: 8px;
+  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
 * {
@@ -216,6 +221,14 @@ body {
   color: var(--dim);
   margin-bottom: 10px;
   white-space: nowrap;
+}
+
+.panel-hint {
+  font-size: 12px;
+  color: var(--dim);
+  max-width: 64ch;
+  margin: -4px 0 10px;
+  line-height: 1.5;
 }
 
 .console-divider {
@@ -704,31 +717,38 @@ body {
 
 /* Mini-aperçu de la courbe EQ sur la tranche (clic = onglet Égaliseur). */
 .strip-eq-mini {
-  position: relative;
-  display: block;
-  height: 50px;
-  padding: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
   background: var(--inset);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   transition: border-color 0.15s ease;
+  text-align: left;
+  color: inherit;
 }
 .strip-eq-mini:hover {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
-.strip-eq-mini svg {
-  width: 100%;
-  height: 100%;
-}
-.strip-eq-label {
-  position: absolute;
-  top: 3px;
-  right: 6px;
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+.strip-eq-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--dim);
+}
+.strip-eq-head svg {
+  width: 11px;
+  height: 11px;
+}
+.strip-eq-curve {
+  width: 100%;
+  height: 26px;
+  display: block;
 }
 
 /* -- fader + VU ------------------------------------------------------------------- */
@@ -745,7 +765,7 @@ body {
 .strip-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
 }
 
 .strip-value {
@@ -925,6 +945,27 @@ button {
   background: color-mix(in srgb, var(--ok) 18%, transparent);
   border-color: color-mix(in srgb, var(--ok) 55%, transparent);
   color: var(--ok);
+}
+
+/* Mute/monitor déplacé dans l'en-tête de la tranche — plus petit, aligné
+   avec le nom et le bouton de suppression. */
+.btn-head {
+  width: 26px;
+  height: 26px;
+  flex: none;
+}
+
+.muted-tag {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  color: var(--dim);
+  flex: none;
+  white-space: nowrap;
 }
 
 .btn-remove {
@@ -1214,6 +1255,16 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.duck-chevron {
+  display: flex;
+  color: var(--accent);
+  flex: none;
+}
+.duck-chevron svg {
+  width: 14px;
+  height: 14px;
 }
 
 .duck-rule {

@@ -480,7 +480,7 @@ export default function App() {
 
             {/* Section dédiée au(x) micro(s), à droite. */}
             <div className="console-group">
-              <h2>Microphone</h2>
+              <h2>Microphone(s)</h2>
               <div className="rail">
                 {micLines.map((line) => (
                   <ChannelStrip
@@ -544,6 +544,10 @@ export default function App() {
 
           <section className="panel">
             <h2>Priorité — ducking</h2>
+            <p className="panel-hint">
+              Baisse automatiquement le volume d'un canal quand un autre devient actif — utile pour
+              entendre tes amis par-dessus le jeu.
+            </p>
             <DuckingPanel
               config={config}
               onChange={(rules: DuckRule[]) => {
