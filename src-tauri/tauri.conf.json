@@ -34,7 +34,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1Q0ZDMDRBNkUyQTk3OUYKUldTZmx5cHVTc0RQTmZTNnIwdGFmQ0JSVVpGYXB5a2ZTUlpNUmRySSs3WVFCYVd2U2l4NWMybnIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJGMkJEMDI2NzhCNEY1MzIKUldReTliUjRKdEFyTDJmNUQ0RWROd3lNUytuVGlWTHp2MUJoWDJTbENRRnJzbHFnZmVmd0I0S1QK",
       "endpoints": [
         "https://github.com/maximemarc/SonnarAudio/releases/latest/download/latest.json"
       ]
