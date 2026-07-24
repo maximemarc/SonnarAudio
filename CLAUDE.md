@@ -26,7 +26,9 @@ cd src-tauri; cargo clippy --all-targets -- -D warnings
 CI/CD (`.github/workflows/`) : `ci.yml` fait tourner ces mêmes commandes sur
 chaque PR (frontend sur `ubuntu-latest`, backend sur `windows-latest` —
 obligatoire, le crate lie WASAPI/Win32 COM) + `commitlint` sur les messages
-de commit. `release.yml` construit l'installeur NSIS sur un tag `vX.Y.Z`.
+de commit + un job `audit` (`npm audit --audit-level=high` et `cargo audit`,
+sur `ubuntu-latest` : `cargo audit` ne lit que `Cargo.lock`, il ne compile
+rien). `release.yml` construit l'installeur NSIS sur un tag `vX.Y.Z`.
 Hooks locaux (husky) : `pre-commit` = lint-staged, `commit-msg` = commitlint
 (Conventional Commits, voir CONTRIBUTING.md).
 

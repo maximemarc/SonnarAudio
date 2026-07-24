@@ -57,3 +57,28 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  # Avis de sécurité des dépendances, des DEUX côtés. Le côté Rust n'était
+  # pas couvert alors que c'est là que vit le code sensible (WASAPI, COM,
+  # interface AudioPolicyConfig non documentée).
+  #
+  # Tourne sur ubuntu bien que le crate soit Windows-only : `cargo audit` ne
+  # fait que lire Cargo.lock et le comparer à la base RustSec, il ne compile
+  # rien — pas besoin du runner Windows, plus lent et plus cher.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Seuil `high` : les avis low/moderate d'un outil de build ne doivent
+      # pas bloquer une PR à eux seuls. `npm audit` travaille depuis le
+      # lockfile, aucune installation n'est nécessaire.
+      - run: npm audit --audit-level=high
+      # Binaire préconstruit : `cargo install cargo-audit` recompilerait
+      # tout à chaque exécution (plusieurs minutes).
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
+        working-directory: src-tauri

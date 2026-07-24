@@ -21,6 +21,24 @@ npm install   # installe aussi les hooks Git via le script "prepare" (husky)
 Ces mêmes commandes tournent en CI (`.github/workflows/ci.yml`) sur chaque
 pull request — une PR qui ne les passe pas en local ne passera pas en CI.
 
+## Sécurité des dépendances
+
+Le job `audit` de la CI échoue sur tout avis de sévérité **haute** ou plus,
+des deux côtés :
+
+```powershell
+npm audit --audit-level=high
+cd src-tauri; cargo audit   # cargo install cargo-audit --locked
+```
+
+`cargo audit` ne fait que comparer `Cargo.lock` à la base RustSec : il ne
+compile rien, d'où un job sur `ubuntu-latest` alors que le crate lui-même
+ne se construit que sous Windows.
+
+Corriger de préférence avec `npm audit fix` **sans** `--force`, pour rester
+dans les bornes semver : une montée de version majeure imposée par
+`--force` casse plus souvent qu'elle ne répare.
+
 ## Hooks Git (husky)
 
 - **pre-commit** : `lint-staged` — ESLint + Prettier sur les fichiers TS/TSX
