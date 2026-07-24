@@ -1580,17 +1580,36 @@ fn enable_streamer_mode(device: String, state: State<AppState>) -> AppConfig {
 // Commands — update check
 // ---------------------------------------------------------------------------
 
-/// Deliberately NOT wired to `tauri-plugin-updater` yet: that plugin refuses
-/// to initialize at all without a real signing pubkey + release endpoint in
-/// `tauri.conf.json` (verified empirically — it panics the whole app on
-/// startup otherwise), and this repo has neither (no GitHub remote/releases
-/// configured — see CLAUDE.md). Once both exist, swap this stub for the
-/// plugin's `updater().check()` call; the frontend contract (`Result<Option<
-/// String>, String>`, `Some(version)` | `None` = up to date) is already
-/// future-proofed for that.
+/// Interroge `latest.json` publié par `release.yml`, télécharge et installe
+/// la mise à jour si elle est plus récente. Le plugin vérifie la signature
+/// minisign de l'archive contre `plugins.updater.pubkey` avant d'écrire
+/// quoi que ce soit : un endpoint compromis ne suffit donc pas à faire
+/// installer un binaire arbitraire.
+///
+/// Renvoie `Some(version)` si une mise à jour a été installée (l'app doit
+/// redémarrer), `None` si l'on est déjà à jour.
+///
+/// Async : le contrôle est un aller-retour réseau, et le téléchargement
+/// peut peser plusieurs mégaoctets — hors du thread principal, comme toute
+/// commande bloquante ici.
 #[tauri::command]
-fn check_for_update() -> Result<Option<String>, String> {
-    Err("mise à jour automatique non configurée pour ce build (nécessite un remote GitHub avec des releases publiées et une clé de signature)".into())
+async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app
+        .updater()
+        .map_err(|e| format!("mise à jour indisponible : {e}"))?;
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let version = update.version.clone();
+            update
+                .download_and_install(|_chunk, _total| {}, || {})
+                .await
+                .map_err(|e| format!("téléchargement/installation impossible : {e}"))?;
+            Ok(Some(version))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("vérification impossible : {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1604,6 +1623,10 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        // Refuse de s'initialiser (et panique tout `main()`) si
+        // `plugins.updater` manque dans tauri.conf.json — d'où le stub
+        // précédent tant que la pubkey et l'endpoint n'existaient pas.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {

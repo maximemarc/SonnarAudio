@@ -93,6 +93,39 @@ ci: passe le job backend sur windows-latest
 Un commit qui ne respecte pas ce format est rejeté par le hook `commit-msg`
 et par le job `commitlint` en CI sur les pull requests.
 
+## Publier une version (et la mise à jour automatique)
+
+La mise à jour auto repose sur `latest.json`, produit et signé par
+`release.yml`, puis servi par
+`https://github.com/maximemarc/SonnarAudio/releases/latest/download/latest.json`.
+L'app valide la signature minisign contre `plugins.updater.pubkey`
+(`tauri.conf.json`) : un endpoint compromis ne suffit pas à faire installer
+un binaire arbitraire.
+
+**Secrets du dépôt à créer une fois** (Settings → Secrets and variables →
+Actions) :
+
+| Secret                               | Contenu                                        |
+| ------------------------------------ | ---------------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | contenu du fichier `~/.tauri/sonnaraudio.key`  |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | vide si la clé a été générée sans mot de passe |
+
+La clé privée ne doit **jamais** être committée. Seule la clé publique
+l'est, dans `tauri.conf.json`. Perdre la clé privée oblige tous les
+utilisateurs à réinstaller à la main : les mises à jour signées par une
+nouvelle clé seront rejetées.
+
+**Pour publier :**
+
+1. Aligner la version dans `package.json`, `src-tauri/Cargo.toml` et
+   `src-tauri/tauri.conf.json`. Le tag ne fait que nommer la release ; la
+   version comparée par le client est celle de `tauri.conf.json`.
+2. `git tag v0.2.0 && git push --tags`
+3. `release.yml` construit l'installeur et crée une release **brouillon**.
+4. **Publier la release** : tant qu'elle reste en brouillon, ses fichiers ne
+   sont pas servis par `releases/latest/download/…` et l'endpoint de mise à
+   jour renvoie 404.
+
 ## Pièges spécifiques à ce projet
 
 Voir [CLAUDE.md](CLAUDE.md) — MAX_PATH, thread COM dédié, encodage

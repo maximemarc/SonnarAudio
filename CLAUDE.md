@@ -210,12 +210,14 @@ RouteCtl>` dans `controls.rs`, déjà lu dans `RenderState::render`
   `SHGetFileInfoW` + `GetIconInfo`/`GetDIBits` → BMP en mémoire → data-URI
   base64, caché par exe (`OnceLock<Mutex<HashMap<...>>>` — l'extraction
   GDI est trop lente pour tourner à chaque poll de `list_apps` à 10 s).
-- **Mise à jour auto** : `tauri-plugin-updater` PAS enregistré (il refuse
-  de démarrer sans pubkey + endpoint valides dans `tauri.conf.json`, testé
-  — panique tout `main()`). `check_for_update` est un stub qui renvoie une
-  erreur explicative ; à câbler pour de vrai une fois un remote GitHub
-  avec des releases publiées et une clé de signature (`tauri signer
-generate`) disponibles.
+- **Mise à jour auto** : `tauri-plugin-updater` enregistré, `check_for_update`
+  vérifie / télécharge / installe pour de vrai. Le plugin **refuse de
+  démarrer** sans `plugins.updater` valide dans `tauri.conf.json` (pubkey +
+  endpoints) — il panique tout `main()`, testé : ne pas retirer ce bloc.
+  Signature minisign vérifiée contre la pubkey avant écriture, donc un
+  endpoint compromis ne suffit pas à installer un binaire arbitraire. La
+  clé PRIVÉE vit uniquement dans les secrets GitHub (`release.yml`), jamais
+  dans le dépôt. Procédure de publication : CONTRIBUTING.md.
 - Les commandes qui font du **COM ou de l'I/O bloquant sont `async`**
   (`list_apps`, `assign_app_to_line`, `unassign_app_from_line`,
   `import_config`, `export_config`) : une commande Tauri **synchrone**
@@ -283,8 +285,6 @@ Deux onglets (state `view` dans App.tsx) :
 ## Reste à faire / idées
 
 - Support de l'IID AudioPolicyConfig pré-21H2 pour vieux Windows 10.
-- Mise à jour automatique fonctionnelle (`tauri-plugin-updater`) — bloqué
-  tant qu'il n'y a pas de remote GitHub + releases + clé de signature.
 - Personnalisation du raccourci global (Ctrl+Alt+M est câblé en dur dans
   `main.rs`, pas encore configurable depuis l'UI).
 - Un profil peut désigner une app absente/désinstallée comme déclencheur

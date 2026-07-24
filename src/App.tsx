@@ -230,9 +230,18 @@ export default function App() {
     void api.enableStreamerMode(device).then(setConfig);
 
   const handleCheckUpdate = () => {
+    setError("Recherche d'une mise à jour…");
     api
       .checkForUpdate()
-      .then((v) => setError(v ? `Mise à jour disponible : v${v}` : "MixFlow est à jour."))
+      // La commande installe la mise à jour avant de rendre la main : le
+      // message doit annoncer le redémarrage, pas une simple disponibilité.
+      .then((v) =>
+        setError(
+          v
+            ? `Mise à jour v${v} installée — redémarre MixFlow pour l'appliquer.`
+            : "MixFlow est à jour.",
+        ),
+      )
       .catch((e) => setError(String(e)));
   };
 

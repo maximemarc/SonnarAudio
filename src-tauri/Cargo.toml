@@ -18,6 +18,9 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 # System-wide hotkey (mic mute toggle) even when the window is hidden in the tray.
 tauri-plugin-global-shortcut = "2"
+# Mise à jour auto : vérifie `latest.json` publié par release.yml et valide
+# la signature minisign contre la pubkey de tauri.conf.json.
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Encodes extracted app icons as data-URIs for the frontend.

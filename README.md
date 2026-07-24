@@ -179,8 +179,8 @@ et **renomme leur côté "rendu" au nom du canal** — aucune manipulation de
   fenêtre réduite dans le tray
 - ✅ Mode Streamer : envoie le mix vers une sortie dédiée en un clic
 - ✅ Réactivité du ducking réglable (douce / normale / rapide) par canal
-- ⏳ Mise à jour automatique : câblage prêt côté client, en attente d'un
-  remote GitHub avec releases + clé de signature
+- ✅ Mise à jour automatique signée (minisign) depuis les releases GitHub —
+  voir [CONTRIBUTING.md](CONTRIBUTING.md) pour publier une version
 
 ## 5. Tests & qualité
 

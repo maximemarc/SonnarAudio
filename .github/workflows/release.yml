@@ -2,6 +2,11 @@ name: Release
 
 # Push a tag like `v0.2.0` to build the NSIS installer and attach it to a
 # draft GitHub Release. Windows-only build (see ci.yml for why).
+#
+# Le tag ne fait que NOMMER la release : la version comparée par le
+# vérificateur de mise à jour est celle de `tauri.conf.json`. Les deux
+# doivent donc être alignées avant de taguer (voir CONTRIBUTING.md), sinon
+# les clients ne verront jamais la nouvelle version.
 on:
   push:
     tags: ["v*.*.*"]
@@ -28,8 +33,18 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signature minisign des artefacts de mise à jour. La clé PRIVÉE
+          # ne vit que dans les secrets du dépôt — jamais dans le code.
+          # Sans elle, `createUpdaterArtifacts` échoue et aucun latest.json
+          # n'est produit. Laisser le mot de passe vide si la clé a été
+          # générée sans (`tauri signer generate -p ""`).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "MixFlow ${{ github.ref_name }}"
+          # ATTENTION : tant que la release reste en BROUILLON, ses fichiers
+          # ne sont pas servis par `releases/latest/download/…` — l'endpoint
+          # de mise à jour renverra 404. Publier la release pour l'activer.
           releaseDraft: true
           prerelease: false

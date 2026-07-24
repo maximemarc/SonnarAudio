@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for the main window: core APIs + events (VU meters).",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default"]
 }
