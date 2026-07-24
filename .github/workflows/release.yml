@@ -11,13 +11,20 @@ on:
   push:
     tags: ["v*.*.*"]
 
+# Créer la release et y attacher l'installeur exige un token en ÉCRITURE.
+# Le réglage par défaut du dépôt peut être « read-only » (c'est le défaut
+# des dépôts récents) : dans ce cas l'upload échoue et la release reste
+# vide, avec seulement les archives de source ajoutées par GitHub.
+permissions:
+  contents: write
+
 jobs:
   build-installer:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -30,14 +37,38 @@ jobs:
 
       - run: npm ci
 
+      # Échouer VITE et clairement si un secret de signature manque. Sans ce
+      # garde-fou, le bundler ne trouve pas le mot de passe, bascule sur une
+      # invite interactive et le job reste bloqué jusqu'au timeout de 6 h en
+      # consommant des minutes Actions — symptôme observé, très trompeur
+      # puisque le run paraît simplement « long ».
+      - name: Vérifier les secrets de signature
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY manquant ou vide."
+            exit 1
+          fi
+          if [ -z "$PW" ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD manquant ou vide. La clé DOIT avoir un mot de passe non vide : sous Windows une variable d'environnement vide équivaut à absente, et le bundler attend alors une saisie interactive."
+            exit 1
+          fi
+          echo "Secrets de signature présents."
+
+      # Timeout de sécurité : même en cas d'imprévu, on ne laisse pas un job
+      # tourner des heures.
       - uses: tauri-apps/tauri-action@v0
+        timeout-minutes: 45
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signature minisign des artefacts de mise à jour. La clé PRIVÉE
           # ne vit que dans les secrets du dépôt — jamais dans le code.
-          # Sans elle, `createUpdaterArtifacts` échoue et aucun latest.json
-          # n'est produit. Laisser le mot de passe vide si la clé a été
-          # générée sans (`tauri signer generate -p ""`).
+          # Le mot de passe doit être NON VIDE (voir l'étape de vérification
+          # ci-dessus) : une variable vide est indistinguable d'une variable
+          # absente sous Windows, et le bundler passe alors en mode invite.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
