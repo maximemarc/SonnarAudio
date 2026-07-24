@@ -4,3 +4,9 @@ src-tauri/target/
 src-tauri/gen/schemas/
 *.local
 .claude/settings.local.json
+
+# Réglages cargo propres à la machine : sert uniquement à contourner
+# MAX_PATH quand le projet vit dans un dossier très profond, en
+# redirigeant target-dir. Un chemin absolu n'a de sens que localement —
+# versionné, il casse la compilation de tout autre contributeur et de la CI.
+src-tauri/.cargo/config.toml

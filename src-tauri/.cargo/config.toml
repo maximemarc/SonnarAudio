@@ -1,6 +1,0 @@
-# The Cowork session workspace lives ~200 characters deep; MSVC's link.exe
-# hits the Windows MAX_PATH (260) limit on build artifacts (LNK1104).
-# Redirect build output to a short path. Safe to delete this file once the
-# project is moved to a shorter directory (e.g. C:\dev\mixflow).
-[build]
-target-dir = "C:/Users/maxim/mixflow-target"

@@ -33,9 +33,17 @@ Hooks locaux (husky) : `pre-commit` = lint-staged, `commit-msg` = commitlint
 ## Pièges connus (à lire avant de toucher quoi que ce soit)
 
 - **MAX_PATH** : ce dossier de session fait ~200 caractères. Le target cargo
-  est redirigé vers `C:\Users\maxim\mixflow-target` via
-  `src-tauri/.cargo/config.toml`. Ne pas supprimer ce fichier tant que le
-  projet vit ici (sinon LNK1104).
+  est redirigé vers un chemin court via `src-tauri/.cargo/config.toml`. Ne
+  pas supprimer ce fichier tant que le projet vit ici (sinon LNK1104).
+  Il est **gitignoré** : un `target-dir` absolu n'a de sens que sur la
+  machine qui l'a écrit et casserait la compilation des autres et de la CI.
+  À recréer à la main si besoin :
+
+  ```toml
+  [build]
+  target-dir = "C:/un/chemin/court"
+  ```
+
 - **COM** : tout appel COM de `src-tauri/src/winapps.rs` DOIT passer par
   `in_com_thread` (les commandes Tauri synchrones tournent sur le thread
   principal STA — l'énumération de sessions y échoue silencieusement).
