@@ -19,7 +19,21 @@ export default function DuckingPanel({ config, onChange, onSetSourceReactivity }
   const lineName = (id: string) => lines.find((l) => l.id === id)?.name ?? "?";
 
   const update = (index: number, patch: Partial<DuckRule>) => {
-    const next = ducking.map((r, i) => (i === index ? { ...r, ...patch } : r));
+    const next = ducking.map((r, i) => {
+      if (i !== index) return r;
+      const merged = { ...r, ...patch };
+      // Une règle source == cible fait qu'un canal s'atténue LUI-MÊME
+      // proportionnellement à son propre niveau (pompage très audible).
+      // Le select des cibles exclut déjà la source ; celui des sources ne
+      // pouvait pas exclure la cible sans empêcher l'échange, donc on
+      // rebascule la cible sur une autre ligne quand la collision arrive.
+      if (merged.source_line === merged.target_line) {
+        const fallback = lines.find((l) => l.id !== merged.source_line);
+        if (!fallback) return r; // une seule ligne : on refuse le changement
+        merged.target_line = fallback.id;
+      }
+      return merged;
+    });
     onChange(next);
   };
 

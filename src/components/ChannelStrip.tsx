@@ -16,6 +16,7 @@ import { isVirtualDevice } from "../types";
 import { curvePoints } from "../eqMath";
 import { useLiveLevel } from "../useLiveLevel";
 import DeviceSelect from "./DeviceSelect";
+import LevelBars from "./LevelBars";
 import VSlider from "./VSlider";
 import {
   ChevronRightIcon,
@@ -258,21 +259,22 @@ export default function ChannelStrip({
         </svg>
       </button>
 
-      <div className="strip-main">
-        <VSlider
-          variant="fader"
-          min={0}
-          max={1.5}
-          resetValue={1}
-          value={line.gain}
-          accent={line.color}
-          meter={{ kind: "lines", id: line.id }}
-          onChange={onGain}
-          title="Volume (double-clic : 100 %)"
-        />
-      </div>
-
-      <div className="strip-foot">
+      {/* Rangée unique alignée en bas, comme la maquette : barres de VU,
+          piste du fader, pourcentage. */}
+      <div className="strip-fader-row">
+        <LevelBars kind="lines" id={line.id} />
+        <div className="strip-main">
+          <VSlider
+            variant="fader"
+            min={0}
+            max={1.5}
+            resetValue={1}
+            value={line.gain}
+            accent={line.color}
+            onChange={onGain}
+            title="Volume (double-clic : 100 %)"
+          />
+        </div>
         <span className="strip-value">{Math.round(line.gain * 100)}%</span>
       </div>
 

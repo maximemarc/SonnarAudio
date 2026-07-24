@@ -7,6 +7,7 @@
 
 import type { AppInfo } from "../types";
 import { useLiveLevel } from "../useLiveLevel";
+import LevelBars from "./LevelBars";
 import VSlider from "./VSlider";
 import { MasterIcon } from "./Icons";
 
@@ -33,29 +34,29 @@ export default function MasterStrip({ value, onChange, unrouted, onRefresh }: Pr
       <div className="strip-cap strip-cap-bus" />
       <div className="strip-glow" />
 
+      {/* La maquette n'a qu'une icône dans la carte : le titre « Master »
+          vit à l'extérieur, porté par le <h2> de la section. */}
       <div className="strip-head strip-head-master">
         <span className="strip-icon">
           <MasterIcon />
         </span>
-        <span className="master-title">MASTER</span>
       </div>
 
-      <div className="strip-main">
-        <VSlider
-          variant="fader"
-          min={0}
-          max={1}
-          resetValue={1}
-          value={value}
-          accent={MASTER_ACCENT}
-          meter={{ kind: "outputs", id: "*" }}
-          onChange={onChange}
-          title="Volume global — baisse tout le mix (double-clic : 100 %)"
-        />
-      </div>
-
-      <div className="strip-foot strip-foot-master">
-        <span className="strip-value">{Math.round(value * 100)}%</span>
+      <div className="strip-fader-row">
+        <LevelBars kind="outputs" id="*" />
+        <div className="strip-main">
+          <VSlider
+            variant="fader"
+            min={0}
+            max={1}
+            resetValue={1}
+            value={value}
+            accent={MASTER_ACCENT}
+            onChange={onChange}
+            title="Volume global — baisse tout le mix (double-clic : 100 %)"
+          />
+        </div>
+        <span className="strip-value strip-value-master">{Math.round(value * 100)}%</span>
       </div>
 
       <div className="strip-apps-zone">

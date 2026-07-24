@@ -24,7 +24,11 @@
   --warn: #f5a524;
   --danger: #f0525f;
   --radius: 8px;
+  --radius-sm: 4px;
   --font: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* La maquette pose les titres en 500 (et non 600/700) — cf. Nocturne
+     `--font-heading-weight`. Inter est embarquée dans main.tsx. */
+  --font-heading-weight: 500;
 }
 
 * {
@@ -128,25 +132,22 @@ body {
 
 /* -- tranche MASTER --------------------------------------------------------------- */
 
+/* Master : piste plus haute et un peu plus large que les canaux (maquette). */
 .strip-master .strip-main {
-  min-height: 230px; /* le grand fader domine la tranche, comme Sonar */
+  height: 260px;
+}
+.strip-master .vs-fader,
+.strip-master .vs-fader .vs-track {
+  width: 28px;
+}
+.strip-master .strip-fader-row {
+  justify-content: center;
 }
 
 .strip-head-master {
   justify-content: center;
   gap: 8px;
   padding: 2px 0;
-}
-
-.master-title {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  color: var(--accent);
-}
-
-.strip-foot-master {
-  justify-content: center;
 }
 
 .engine-pill {
@@ -196,15 +197,13 @@ body {
 
 /* -- console (rangée de tranches) --------------------------------------------- */
 
+/* Le mockup n'a que DEUX surfaces (fond + carte) : les groupes flottent
+   librement sur le fond, alignés à gauche, sans encadré ni rail
+   intermédiaire, et sans filet vertical entre eux. */
 .console {
   display: flex;
   align-items: stretch;
-  justify-content: center; /* la console est centrée dans la fenêtre */
-  gap: 16px;
-  background: var(--rail);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px 16px;
+  gap: 17px;
   flex-wrap: wrap; /* les groupes s'empilent sur fenêtre étroite */
 }
 
@@ -231,11 +230,8 @@ body {
   line-height: 1.5;
 }
 
-.console-divider {
-  width: 1px;
-  background: var(--border);
-  margin-top: 26px;
-  flex: none;
+.console-group h2 {
+  opacity: 0.6;
 }
 
 .rail {
@@ -249,7 +245,7 @@ body {
 
 .strip {
   position: relative;
-  width: 158px;
+  width: 200px; /* gabarit du mockup ; les micros passent à 210px */
   min-height: 520px; /* toutes les tranches à la même hauteur */
   flex: none;
   display: flex;
@@ -519,62 +515,79 @@ body {
 
 /* -- CHATMIX -------------------------------------------------------------------- */
 
+/* Carte du mockup : en-tête « Chatmix » + report chiffré, puis la rangée
+   icône / rail / icône. Rail NEUTRE avec remplissage accent (le dégradé
+   violet→cyan précédent sortait de la palette). */
 .chatmix {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: var(--strip);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 620px;
+}
+
+.chatmix-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chatmix-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 12px auto 0; /* centré sous les canaux */
-  padding: 9px 14px;
-  background: var(--strip);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  max-width: 360px;
 }
 
 .chatmix-icon {
   display: grid;
   place-items: center;
   flex: none;
-}
-
-.chatmix-slider {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .chatmix-label {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
   color: var(--dim);
 }
 
-.chatmix-slider input[type="range"] {
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, #7c3aed 55%, transparent),
-    rgba(255, 255, 255, 0.12),
-    color-mix(in srgb, #22d3ee 55%, transparent)
-  );
-  outline: none;
+.chatmix-readout {
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  font-variant-numeric: tabular-nums;
 }
-.chatmix-slider input[type="range"]::-webkit-slider-thumb {
+
+.chatmix-row input[type="range"] {
+  flex: 1;
   appearance: none;
   -webkit-appearance: none;
-  width: 16px;
-  height: 14px;
-  border-radius: 4px;
-  background: #e8ecf2;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  outline: none;
+  accent-color: var(--accent);
+}
+.chatmix-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text);
   border: 1px solid rgba(0, 0, 0, 0.5);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
   cursor: grab;
 }
 
@@ -625,7 +638,9 @@ body {
   border-radius: 4px 4px 0 0;
   color: var(--text);
   font: inherit;
-  font-weight: 600;
+  /* Maquette : nom de canal en 15px, graisse de titre (500). */
+  font-size: 15px;
+  font-weight: var(--font-heading-weight);
   padding: 3px 4px;
   cursor: text;
   text-align: center; /* titres de tranche centrés, comme Sonar */
@@ -753,25 +768,47 @@ body {
 
 /* -- fader + VU ------------------------------------------------------------------- */
 
+/* Rangée du fader façon maquette : barres de VU, piste, pourcentage — tout
+   sur UNE ligne alignée en bas. */
+.strip-fader-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 0;
+}
+
 .strip-main {
   flex: 1;
   display: flex;
   justify-content: center;
   align-items: stretch;
-  padding: 10px 0 6px;
-  min-height: 180px;
-}
-
-.strip-foot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  height: 200px;
 }
 
 .strip-value {
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: var(--dim);
+  color: var(--text);
+  flex: none;
+}
+.strip-value-master {
+  font-size: 15px;
+}
+
+/* Les trois barres de VU (LevelBars) — hauteur pilotée en JS. */
+.level-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 34px;
+  flex: none;
+}
+.level-bar {
+  width: 4px;
+  height: 6px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
 }
 
 /* -- slider vertical (VSlider) ------------------------------------------------------ */
@@ -792,7 +829,7 @@ body {
 }
 
 .vs-fader {
-  width: 34px;
+  width: 26px; /* gabarit de piste de la maquette */
 }
 .vs-eq {
   width: 18px;
@@ -807,38 +844,22 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* Sonar signature: VU meter drawn inside the fader track. */
+/* Piste pleine largeur de la maquette : le VU vit désormais À CÔTÉ du fader
+   (LevelBars), la piste ne porte plus que le remplissage de gain. */
 .vs-fader .vs-track {
-  width: 9px;
-  border-radius: 5px;
-  background: var(--inset);
+  width: 26px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg);
   border: 1px solid var(--border);
 }
 
-.vs-vu {
-  position: absolute;
-  bottom: 0;
-  left: 1px;
-  right: 1px;
-  height: 0%;
-  border-radius: 4px;
-  background: linear-gradient(
-    0deg,
-    var(--ok) 0%,
-    var(--ok) 62%,
-    var(--warn) 82%,
-    var(--danger) 100%
-  );
-  /* height driven by VSlider's rAF loop */
-}
-
+/* Maquette : remplissage en accent-700 (accent assombri), pleine largeur. */
 .vs-fill {
   position: absolute;
   left: 0;
   width: 100%;
-  border-radius: 3px;
-  background: var(--accent);
-  opacity: 0.85;
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--accent) 72%, black);
 }
 
 .vs-zero {
@@ -850,21 +871,23 @@ body {
   background: rgba(255, 255, 255, 0.18);
 }
 
+/* Maquette : bandeau clair de 12px débordant de 3px de chaque côté. */
 .vs-thumb {
   position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 22px;
-  height: 11px;
+  left: -3px;
+  right: -3px;
+  width: auto;
+  height: 12px;
   border-radius: 3px;
-  background: #e8ecf2;
-  border: 1px solid rgba(0, 0, 0, 0.5);
-  box-shadow:
-    inset 0 -2px 0 color-mix(in srgb, var(--accent) 80%, transparent),
-    0 1px 4px rgba(0, 0, 0, 0.5);
+  background: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }
+/* Le mini-slider EQ garde un thumb centré, pas le bandeau débordant. */
 .vs-eq .vs-thumb {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
   width: 13px;
   height: 7px;
 }
@@ -983,24 +1006,39 @@ button {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
+/* Placeholder en pointillés de MÊME gabarit que les cartes voisines (le
+   mockup en fait une carte pleine largeur, pas une languette). */
 .strip-add {
-  width: 64px;
+  width: 200px;
+  min-height: 120px;
+  align-self: stretch;
   flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  gap: 6px;
+  border: 1.5px dashed var(--border);
   border-radius: var(--radius);
-  color: var(--dim);
-  font-size: 22px;
+  color: var(--text);
+  font-size: 20px;
+  opacity: 0.55;
   transition: all 0.15s ease;
 }
+.strip-add:hover {
+  opacity: 1;
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .strip-add small {
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.06em;
+}
+/* Colonne micro : cartes et placeholder à 210px. */
+.console-group-mic .strip,
+.console-group-mic .strip-add {
+  width: 210px;
 }
 .strip-add:hover {
   border-color: var(--accent);
@@ -1096,11 +1134,7 @@ button {
     gap: 12px;
   }
   .console {
-    padding: 10px 12px 12px;
     gap: 12px;
-  }
-  .console-divider {
-    display: none; /* les groupes empilés n'ont plus besoin du séparateur */
   }
 }
 

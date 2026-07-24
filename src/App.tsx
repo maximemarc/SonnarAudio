@@ -294,7 +294,7 @@ export default function App() {
             devices={devices.outputs}
             value=""
             placeholder="🎥 Mode Streamer…"
-            role="speaker"
+            role="stream"
             onChange={(d) => d && handleEnableStreamer(d)}
           />
           <button
@@ -382,8 +382,6 @@ export default function App() {
                 />
               </div>
             </div>
-
-            <div className="console-divider" />
 
             <div className="console-group">
               <h2>Canaux</h2>
@@ -476,10 +474,8 @@ export default function App() {
               />
             </div>
 
-            <div className="console-divider" />
-
             {/* Section dédiée au(x) micro(s), à droite. */}
-            <div className="console-group">
+            <div className="console-group console-group-mic">
               <h2>Microphone(s)</h2>
               <div className="rail">
                 {micLines.map((line) => (

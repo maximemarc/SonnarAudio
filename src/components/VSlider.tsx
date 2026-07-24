@@ -4,13 +4,12 @@
  * ~20 Hz with a guaranteed final send on release. Double-click resets to
  * `resetValue` when provided.
  *
- * Sonar signature: when `meter` is set, the live VU level is drawn INSIDE
- * the fader track (green fill rising from the bottom), driven by its own
- * requestAnimationFrame loop — zero React re-renders at metering rate.
+ * Le VU ne vit plus dans la piste : la maquette le place à CÔTÉ du fader,
+ * sous la forme de trois barres (voir `LevelBars`). La piste ne porte donc
+ * plus que le remplissage de gain.
  */
 
 import { useEffect, useRef, useState } from "react";
-import { levelToFraction, peakOf } from "../levels";
 
 interface Props {
   value: number;
@@ -24,8 +23,6 @@ interface Props {
   resetValue?: number;
   /** "vs-fader" (large) or "vs-eq" (mini). */
   variant: "fader" | "eq";
-  /** Draw a live VU meter inside the track (fader variant). */
-  meter?: { kind: "lines" | "outputs"; id: string };
   title?: string;
 }
 
@@ -40,14 +37,11 @@ export default function VSlider({
   center,
   resetValue,
   variant,
-  meter,
   title,
 }: Props) {
   const [local, setLocal] = useState(value);
   const dragging = useRef(false);
   const trackRef = useRef<HTMLDivElement>(null);
-  const meterRef = useRef<HTMLDivElement>(null);
-  const shown = useRef(0);
   const lastSent = useRef(0);
   const pending = useRef<number | null>(null);
 
@@ -55,23 +49,6 @@ export default function VSlider({
   useEffect(() => {
     if (!dragging.current) setLocal(value);
   }, [value]);
-
-  // VU ballistics: instant attack, smooth release.
-  useEffect(() => {
-    if (!meter) return;
-    let raf = 0;
-    const tick = () => {
-      const raw = peakOf(meter.kind, meter.id);
-      const target = levelToFraction(raw);
-      shown.current = target > shown.current ? target : shown.current * 0.92;
-      if (meterRef.current) {
-        meterRef.current.style.height = `${(shown.current * 100).toFixed(1)}%`;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [meter?.kind, meter?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = (v: number, force: boolean) => {
     const now = performance.now();
@@ -155,10 +132,9 @@ export default function VSlider({
       }}
     >
       <div className="vs-track" ref={trackRef}>
-        {meter && <div className="vs-vu" ref={meterRef} />}
         {center && <div className="vs-zero" />}
-        {!meter && <div className="vs-fill" style={fill} />}
-        <div className="vs-thumb" style={{ bottom: `calc(${frac * 100}% - 5px)` }} />
+        <div className="vs-fill" style={fill} />
+        <div className="vs-thumb" style={{ bottom: `calc(${frac * 100}% - 6px)` }} />
       </div>
     </div>
   );

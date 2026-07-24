@@ -140,8 +140,13 @@ fn sanitize_config(cfg: &mut AppConfig) {
     cfg.master_gain = finite_or(cfg.master_gain, 1.0).clamp(0.0, 1.0);
 
     let line_ids: HashSet<String> = cfg.lines.iter().map(|l| l.id.clone()).collect();
-    cfg.ducking
-        .retain(|d| line_ids.contains(&d.source_line) && line_ids.contains(&d.target_line));
+    // `source == target` ferait qu'une ligne s'atténue elle-même selon son
+    // propre niveau (pompage audible) — voir `set_duck_rules`.
+    cfg.ducking.retain(|d| {
+        d.source_line != d.target_line
+            && line_ids.contains(&d.source_line)
+            && line_ids.contains(&d.target_line)
+    });
     for d in &mut cfg.ducking {
         d.amount = finite_or(d.amount, 0.5).clamp(0.0, 1.0);
     }
@@ -995,13 +1000,33 @@ fn set_master_gain(gain: f32, state: State<AppState>) {
 
 /// Replace the whole ducking rule set. Rules live behind an RwLock that the
 /// render callbacks `try_read`, so this is glitch-free too.
+///
+/// Les règles sont filtrées ici et pas seulement dans l'UI : l'import et les
+/// profils écrivent aussi `ducking`. Une règle source == cible fait qu'une
+/// ligne s'atténue elle-même en fonction de son propre niveau (pompage), et
+/// une règle référant une ligne absente n'aurait aucun effet utile.
 #[tauri::command]
 fn set_duck_rules(rules: Vec<DuckRule>, state: State<AppState>) {
-    {
+    let sane = {
         let mut cfg = state.config.lock();
-        cfg.ducking = rules.clone();
-    }
-    *state.controls.read().ducking.write() = rules;
+        let ids: std::collections::HashSet<String> =
+            cfg.lines.iter().map(|l| l.id.clone()).collect();
+        let sane: Vec<DuckRule> = rules
+            .into_iter()
+            .filter(|r| {
+                r.source_line != r.target_line
+                    && ids.contains(&r.source_line)
+                    && ids.contains(&r.target_line)
+            })
+            .map(|mut r| {
+                r.amount = finite_or(r.amount, 0.5).clamp(0.0, 1.0);
+                r
+            })
+            .collect();
+        cfg.ducking = sane.clone();
+        sane
+    };
+    *state.controls.read().ducking.write() = sane;
     persist(&state);
 }
 
@@ -1774,6 +1799,12 @@ mod tests {
             target_line: line_id.clone(),
             amount: 42.0,
         });
+        // Règle auto-référente : la ligne s'atténuerait elle-même.
+        cfg.ducking.push(DuckRule {
+            source_line: line_id.clone(),
+            target_line: line_id.clone(),
+            amount: 0.5,
+        });
 
         sanitize_config(&mut cfg);
 
@@ -1789,8 +1820,9 @@ mod tests {
         assert_eq!(line.routes.len(), 1);
         assert_eq!(line.routes[0].output_id, bus);
         assert!(line.routes.iter().all(|r| r.gain.is_finite()));
-        // La règle orpheline a disparu, les rescapées sont bornées.
+        // Règles orpheline ET auto-référente écartées, rescapées bornées.
         assert!(cfg.ducking.iter().all(|d| d.source_line != "ligne-fantome"));
+        assert!(cfg.ducking.iter().all(|d| d.source_line != d.target_line));
         assert!(cfg.ducking.iter().all(|d| (0.0..=1.0).contains(&d.amount)));
     }
 
