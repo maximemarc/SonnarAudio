@@ -39,6 +39,29 @@ Corriger de préférence avec `npm audit fix` **sans** `--force`, pour rester
 dans les bornes semver : une montée de version majeure imposée par
 `--force` casse plus souvent qu'elle ne répare.
 
+### Alertes Dependabot attendues (ne pas chercher à les corriger)
+
+Dependabot analyse `Cargo.lock`, qui contient les dépendances de **toutes**
+les plateformes. Or MixFlow ne se construit que sous Windows : toute la
+pile GTK/GDK/glib de Tauri (le backend `webkit2gtk`, utilisé sur Linux
+uniquement — Windows passe par WebView2) figure dans le lockfile sans
+jamais être compilée dans le binaire livré.
+
+C'est notamment le cas de **RUSTSEC-2024-0429** (`glib` < 0.20, unsoundness
+dans `VariantStrIter`) : Dependabot signale lui-même ne pas pouvoir le
+corriger, Tauri 2 épinglant la génération gtk-rs 0.18. Vérification :
+
+```powershell
+cd src-tauri
+cargo tree --target x86_64-pc-windows-msvc --invert glib   # "nothing to print"
+cargo tree --target x86_64-unknown-linux-gnu --invert glib # glib <- gtk <- tauri
+```
+
+Ces alertes peuvent être classées « not affected » sur GitHub. `cargo audit`
+les remonte en simple avertissement (`unmaintained` / `unsound`) et sort
+en 0, donc la CI reste verte — c'est voulu : la durcir mettrait le build au
+rouge en permanence pour du code qui n'est même pas compilé.
+
 ## Hooks Git (husky)
 
 - **pre-commit** : `lint-staged` — ESLint + Prettier sur les fichiers TS/TSX
