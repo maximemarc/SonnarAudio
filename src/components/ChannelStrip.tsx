@@ -262,7 +262,10 @@ export default function ChannelStrip({
       {/* Rangée unique alignée en bas, comme la maquette : barres de VU,
           piste du fader, pourcentage. */}
       <div className="strip-fader-row">
-        <LevelBars kind="lines" id={line.id} />
+        {/* `idle` : la ligne capture bien quelque chose mais peut être
+            silencieuse — on la montre vivante. Une ligne sans source ou
+            coupée reste à plat. */}
+        <LevelBars kind="lines" id={line.id} idle={active && !line.muted} />
         <div className="strip-main">
           <VSlider
             variant="fader"

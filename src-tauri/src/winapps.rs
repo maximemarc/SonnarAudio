@@ -630,6 +630,12 @@ const PKEY_DEVICE_DESC: PROPERTYKEY = PROPERTYKEY {
 /// "Game (VB-Audio Virtual Cable)" in every Windows output-device picker —
 /// the Sonar experience.
 pub fn rename_render_device(device_id: &str, new_desc: &str) -> Result<(), String> {
+    // Un nom vide laisserait le périphérique SANS étiquette dans tout
+    // Windows — refuser plutôt que d'abîmer la config son de l'utilisateur
+    // (les appelants dérivent parfois ce nom d'une ligne introuvable).
+    if new_desc.trim().is_empty() {
+        return Err("nom vide : renommage ignoré".into());
+    }
     let (id, desc) = (device_id.to_string(), new_desc.to_string());
     in_com_thread(move || rename_render_device_inner(&id, &desc))
 }
@@ -647,7 +653,24 @@ fn rename_render_device_inner(device_id: &str, new_desc: &str) -> Result<(), Str
                 "renommage refusé ({e}) — lance MixFlow en administrateur une fois, ou renomme le périphérique dans Paramètres → Son"
             )
         })?;
-        let value = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::from(new_desc);
+        // ATTENTION au type de PROPVARIANT. `PROPVARIANT::from(&str)` de
+        // windows-rs construit un **VT_BSTR** (il passe par `BSTR::from`),
+        // que le magasin de propriétés sérialise en REG_BINARY. Or Windows
+        // stocke `PKEY_Device_DeviceDesc` en **VT_LPWSTR** (REG_SZ) : avec un
+        // BSTR, la valeur est bien écrite mais le panneau Son et les
+        // sélecteurs de périphériques n'arrivent pas à la lire et affichent
+        // un nom VIDE. On convertit donc explicitement en VT_LPWSTR.
+        use windows::Win32::System::Com::StructuredStorage::{PropVariantChangeType, PROPVARIANT};
+        use windows::Win32::System::Variant::VT_LPWSTR;
+        let as_bstr = PROPVARIANT::from(new_desc);
+        let mut value = PROPVARIANT::default();
+        PropVariantChangeType(
+            &mut value,
+            &as_bstr,
+            windows::Win32::System::Com::StructuredStorage::PROPVAR_CHANGE_FLAGS(0),
+            VT_LPWSTR,
+        )
+        .map_err(err("conversion du nom en VT_LPWSTR"))?;
         store
             .SetValue(&PKEY_DEVICE_DESC, &value)
             .map_err(|e| format!("renommage refusé ({e}) — essaie en administrateur"))?;

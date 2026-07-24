@@ -43,7 +43,9 @@ export default function MasterStrip({ value, onChange, unrouted, onRefresh }: Pr
       </div>
 
       <div className="strip-fader-row">
-        <LevelBars kind="outputs" id="*" />
+        {/* Le master agrège tous les bus : il y a toujours une sortie
+            derrière, donc il respire au repos. */}
+        <LevelBars kind="outputs" id="*" idle />
         <div className="strip-main">
           <VSlider
             variant="fader"

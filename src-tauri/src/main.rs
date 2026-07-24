@@ -529,7 +529,29 @@ fn reconcile_config(config: &mut AppConfig) {
     // Les lignes s'approprient un câble libre et le renomment, pour exister
     // comme haut-parleurs dans Windows dès le premier lancement.
     auto_bind_lines(config);
+    reassert_cable_names(config);
     config.schema_version = CURRENT_SCHEMA_VERSION;
+}
+
+/// Ré-affirme le nom Windows des câbles DÉJÀ appropriés.
+///
+/// `plan_cable_bindings` ne planifie que les lignes sans source : une ligne
+/// déjà liée n'était donc jamais renommée à nouveau. C'est ce qui rendait
+/// l'app incapable de se réparer après qu'une version antérieure a écrit la
+/// description dans un PROPVARIANT VT_BSTR — type que Windows sérialise en
+/// REG_BINARY et que le panneau Son ne sait pas relire, d'où des
+/// périphériques affichés SANS NOM. On réécrit donc le nom au démarrage,
+/// ce qui garde aussi l'endpoint synchronisé si la ligne a été renommée
+/// pendant que le câble était absent.
+fn reassert_cable_names(cfg: &AppConfig) {
+    for line in &cfg.lines {
+        if line.kind == "mic" || line.name.trim().is_empty() {
+            continue;
+        }
+        if let Some(rid) = &line.cable_render_id {
+            let _ = winapps::rename_render_device(rid, &line.name);
+        }
+    }
 }
 
 /// Phase 1 — pure, no I/O: which lines need a cable, and which free cable
