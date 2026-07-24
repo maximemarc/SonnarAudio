@@ -52,6 +52,9 @@ export default function App() {
     void api.getConfig().then(setConfig);
     void api.listDevices().then(setDevices);
     void api.getAutostartEnabled().then(setAutostart);
+    // Config illisible mise de côté au démarrage, etc. — sans ça le message
+    // ne partait qu'en stderr, invisible dans le binaire de release.
+    void api.takeStartupNotice().then((n) => n && setError(n));
     refreshApps();
     // Apps come and go — light periodic rescan + rescan when the window
     // regains focus (the user just launched something).
@@ -207,14 +210,18 @@ export default function App() {
       .catch((e) => setError(String(e)));
   };
   const handleImportConfig = () => {
+    setError(null);
     api
       .importConfig()
       .then((cfg) => {
-        if (cfg) {
-          setConfig(cfg);
-          refreshDevices();
-          refreshApps();
-        }
+        // null = import annulé (dialogue fermé ou confirmation refusée).
+        if (!cfg) return;
+        setConfig(cfg);
+        refreshDevices();
+        refreshApps();
+        setError(
+          "Configuration importée. L'ancienne a été sauvegardée à côté du fichier de config.",
+        );
       })
       .catch((e) => setError(String(e)));
   };

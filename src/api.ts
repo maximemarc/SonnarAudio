@@ -108,3 +108,10 @@ export const enableStreamerMode = (device: string) =>
 
 /** Rejects with an explanatory message until a real release endpoint exists. */
 export const checkForUpdate = () => invoke<string | null>("check_for_update");
+
+/**
+ * Message éventuel du démarrage (config illisible mise de côté…), consommé
+ * une seule fois : le binaire de release n'a pas de console, un eprintln y
+ * serait invisible.
+ */
+export const takeStartupNotice = () => invoke<string | null>("take_startup_notice");

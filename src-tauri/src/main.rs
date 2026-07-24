@@ -245,6 +245,47 @@ fn save_config(path: &Path, cfg: &AppConfig) {
     }
 }
 
+/// Message à montrer à l'utilisateur au prochain affichage de l'UI (config
+/// illisible mise de côté…). Rempli au démarrage, avant que `AppState`
+/// n'existe ; consommé une fois par la commande `take_startup_notice`.
+static STARTUP_NOTICE: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+
+fn set_startup_notice(msg: String) {
+    eprintln!("[mixflow] {msg}");
+    *STARTUP_NOTICE.get_or_init(|| Mutex::new(None)).lock() = Some(msg);
+}
+
+/// Récupérée une seule fois par le frontend au montage : le binaire de
+/// release tourne sans console (`windows_subsystem = "windows"`), un
+/// `eprintln!` y est invisible.
+#[tauri::command]
+fn take_startup_notice() -> Option<String> {
+    STARTUP_NOTICE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .take()
+}
+
+/// Un JSON syntaxiquement valide n'est pas pour autant une config MixFlow :
+/// TOUS les champs d'`AppConfig` sont `#[serde(default)]` et serde ignore
+/// les clés inconnues, donc `{}` — et par conséquent n'importe quel objet
+/// JSON, `package.json` compris — se désérialise sans erreur en une config
+/// VIDE. On exige donc la signature structurelle du format.
+fn looks_like_mixflow_config(v: &serde_json::Value) -> bool {
+    let Some(obj) = v.as_object() else {
+        return false;
+    };
+    obj.get("lines").map(|x| x.is_array()).unwrap_or(false)
+        && obj.get("outputs").map(|x| x.is_array()).unwrap_or(false)
+}
+
+/// Copie de sûreté avant d'écraser la config courante (import). Renvoie le
+/// chemin écrit, pour pouvoir le citer à l'utilisateur.
+fn backup_config(path: &Path) -> Option<PathBuf> {
+    let bak = path.with_extension("json.bak");
+    std::fs::copy(path, &bak).ok().map(|_| bak)
+}
+
 fn load_or_default(path: &Path) -> AppConfig {
     match std::fs::read_to_string(path) {
         Ok(json) => match serde_json::from_str::<AppConfig>(&json) {
@@ -255,7 +296,20 @@ fn load_or_default(path: &Path) -> AppConfig {
                 cfg
             }
             Err(e) => {
-                eprintln!("[mixflow] config unreadable ({e}), starting fresh");
+                // NE PAS laisser `main()` réécrire par-dessus : le fichier
+                // fautif est souvent réparable à la main (une virgule en
+                // trop, une troncature) et serait sinon perdu à jamais.
+                let corrupt = path.with_extension("json.corrupt");
+                let saved = std::fs::rename(path, &corrupt).is_ok();
+                set_startup_notice(if saved {
+                    format!(
+                        "Configuration illisible ({e}) — repartie des réglages d'usine. \
+                         L'ancien fichier est conservé ici : {}",
+                        corrupt.display()
+                    )
+                } else {
+                    format!("Configuration illisible ({e}) — repartie des réglages d'usine.")
+                });
                 default_config()
             }
         },
@@ -394,6 +448,88 @@ fn cable_used_as_output(cfg: &AppConfig, capture_name: &str) -> bool {
     cfg.outputs
         .iter()
         .any(|o| is_virtual_capture(&o.device) && adapter_suffix(&o.device) == Some(suffix))
+}
+
+/// Réconciliations appliquées à TOUTE config qui entre dans l'application —
+/// démarrage comme import. Là où `sanitize_config` ne fait que borner des
+/// valeurs, celles-ci garantissent la structure en tenant compte de
+/// l'environnement réel (périphériques présents, câbles libres).
+///
+/// Contient du COM bloquant (`auto_bind_lines`) : à n'appeler QUE hors du
+/// verrou `state.config`.
+fn reconcile_config(config: &mut AppConfig) {
+    // Les canaux d'apps ne capturent plus de matériel physique (l'UI
+    // loopback a été retirée) — on libère ces sources.
+    for line in &mut config.lines {
+        if line.kind != "mic" {
+            if let Some(d) = &line.input_device {
+                if !is_virtual_capture(d) {
+                    line.input_device = None;
+                    line.cable_render_id = None;
+                }
+            }
+        }
+    }
+    // Garantir une tranche Micro.
+    if !config.lines.iter().any(|l| l.kind == "mic") {
+        let routes = config
+            .outputs
+            .iter()
+            .map(|o| Route {
+                output_id: o.id.clone(),
+                gain: 1.0,
+            })
+            .collect();
+        config.lines.push(LineConfig {
+            id: new_id("line"),
+            name: "Mic".into(),
+            kind: "mic".into(),
+            color: "#fb923c".into(),
+            input_device: None,
+            gain: 1.0,
+            muted: true, // retour micro désactivé par défaut
+            eq: [0.0; 5],
+            eq_bands: default_bands(),
+            apps: Vec::new(),
+            cable_render_id: None,
+            routes,
+            duck_reactivity: "normale".into(),
+        });
+    }
+    // Chaque ligne doit sortir quelque part : les routes orphelines sont
+    // nettoyées, et toute ligne sans sortie est branchée sur le
+    // périphérique par défaut de Windows (jamais sur un de nos câbles —
+    // boucle garantie sinon).
+    {
+        let bus_ids: std::collections::HashSet<String> =
+            config.outputs.iter().map(|o| o.id.clone()).collect();
+        for line in &mut config.lines {
+            line.routes.retain(|r| bus_ids.contains(&r.output_id));
+        }
+        let default_dev = cpal::default_host()
+            .default_output_device()
+            .and_then(|d| d.name().ok())
+            .filter(|n| !is_virtual_capture(n));
+        if let Some(dev) = default_dev {
+            let needs: Vec<usize> = (0..config.lines.len())
+                .filter(|&i| config.lines[i].routes.is_empty())
+                .collect();
+            if !needs.is_empty() {
+                let bus_id = find_or_create_bus(config, &dev);
+                for i in needs {
+                    config.lines[i].routes.push(Route {
+                        output_id: bus_id.clone(),
+                        gain: 1.0,
+                    });
+                }
+            }
+        }
+        prune_unused_buses(config);
+    }
+    // Les lignes s'approprient un câble libre et le renomment, pour exister
+    // comme haut-parleurs dans Windows dès le premier lancement.
+    auto_bind_lines(config);
+    config.schema_version = CURRENT_SCHEMA_VERSION;
 }
 
 /// Phase 1 — pure, no I/O: which lines need a cable, and which free cable
@@ -1156,19 +1292,88 @@ async fn import_config(
     };
     let path_buf = path.into_path().map_err(|e| e.to_string())?;
     let json = std::fs::read_to_string(&path_buf).map_err(|e| e.to_string())?;
+
+    // 1. Est-ce seulement une config MixFlow ? Tous les champs d'AppConfig
+    //    sont `#[serde(default)]`, donc n'importe quel objet JSON (un
+    //    package.json choisi par erreur dans le dialogue, qui ne filtre que
+    //    sur .json) se désérialiserait en une config VIDE et effacerait tout.
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("fichier illisible : {e}"))?;
+    if !looks_like_mixflow_config(&value) {
+        return Err(
+            "ce fichier n'est pas une configuration MixFlow (il lui manque les sections \
+             « lines » et « outputs »). Rien n'a été modifié."
+                .into(),
+        );
+    }
     let mut imported: AppConfig =
-        serde_json::from_str(&json).map_err(|e| format!("fichier invalide : {e}"))?;
-    // Un JSON syntaxiquement valide n'est pas pour autant sain : sans ce
-    // passage, un `"gain": 1e300` (→ +inf en f32) contaminait le lissage de
-    // gain du rendu puis l'état des biquads, laissant la ligne muette ou
-    // bruyante jusqu'au prochain rebuild. Mêmes garde-fous qu'au démarrage.
+        serde_json::from_value(value).map_err(|e| format!("fichier invalide : {e}"))?;
+    // 2. Un JSON valide n'est pas pour autant sain : sans ce passage, un
+    //    `"gain": 1e300` (→ +inf en f32) contaminait le lissage de gain du
+    //    rendu puis l'état des biquads, laissant la ligne muette ou bruyante.
     sanitize_config(&mut imported);
+
+    // 3. L'import est destructif et irréversible : on demande confirmation en
+    //    annonçant ce qui arrive, et on garde une copie de l'existant.
+    let confirmed = app
+        .dialog()
+        .message(format!(
+            "La configuration actuelle sera remplacée par : {} canal/canaux, {} profil(s), \
+             {} preset(s) d'égaliseur.\n\nUne sauvegarde de la configuration actuelle sera \
+             conservée à côté du fichier de config.",
+            imported.lines.len(),
+            imported.profiles.len(),
+            imported.eq_presets.len(),
+        ))
+        .title("Importer cette configuration ?")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancel)
+        .blocking_show();
+    if !confirmed {
+        return Ok(None);
+    }
+    let backup = backup_config(&state.config_path);
+
+    // 4. Windows garde un routage PERSISTÉ par application
+    //    (SetPersistedDefaultAudioEndpoint). Les apps de l'ancienne config
+    //    que la nouvelle ne reprend pas continueraient sinon de jouer dans un
+    //    câble que plus aucune ligne ne capture : silence total, sans le
+    //    moindre avertissement. On les rend à la sortie par défaut.
+    let stale_apps: Vec<String> = {
+        let cfg = state.config.lock();
+        let kept: std::collections::HashSet<String> = imported
+            .lines
+            .iter()
+            .flat_map(|l| l.apps.iter().map(|a| a.to_lowercase()))
+            .collect();
+        cfg.lines
+            .iter()
+            .flat_map(|l| l.apps.iter())
+            .filter(|a| !kept.contains(&a.to_lowercase()))
+            .cloned()
+            .collect()
+    };
+    for exe in &stale_apps {
+        let _ = winapps::unroute_app(exe);
+    }
+
+    // 5. Mêmes réconciliations qu'au démarrage (câbles, sorties, tranche
+    //    micro) — la config vient peut-être d'une autre machine. Fait HORS
+    //    du verrou : `reconcile_config` contient du COM bloquant.
+    reconcile_config(&mut imported);
+
     let cfg_after = {
         let mut cfg = state.config.lock();
         *cfg = imported;
         cfg.clone()
     };
     rebuild(&state);
+    if let Some(bak) = backup {
+        eprintln!(
+            "[mixflow] config précédente sauvegardée : {}",
+            bak.display()
+        );
+    }
     Ok(Some(cfg_after))
 }
 
@@ -1457,111 +1662,9 @@ fn main() {
                 .expect("no config dir on this platform")
                 .join("mixflow.config.json");
             let mut config = load_or_default(&config_path);
-            // Migration EQ fixe (5 bandes) → EQ paramétrique.
-            for line in &mut config.lines {
-                if line.eq_bands.is_empty() {
-                    line.eq_bands = EQ_FREQS
-                        .iter()
-                        .zip(line.eq.iter())
-                        .map(|(&freq, &gain)| EqBandCfg { freq, gain })
-                        .collect();
-                }
-            }
-            for preset in &mut config.eq_presets {
-                if preset.bands.is_empty() && preset.gains.len() == EQ_FREQS.len() {
-                    preset.bands = EQ_FREQS
-                        .iter()
-                        .zip(preset.gains.iter())
-                        .map(|(&freq, &gain)| EqBandCfg { freq, gain })
-                        .collect();
-                }
-            }
-            // Migration : les canaux d'apps ne capturent plus de matériel
-            // physique (l'UI loopback a été retirée) — on libère ces sources.
-            for line in &mut config.lines {
-                if line.kind != "mic" {
-                    if let Some(d) = &line.input_device {
-                        if !is_virtual_capture(d) {
-                            line.input_device = None;
-                            line.cable_render_id = None;
-                        }
-                    }
-                }
-            }
-            // Migration : garantir une tranche Micro.
-            if !config.lines.iter().any(|l| l.kind == "mic") {
-                let routes = config
-                    .outputs
-                    .iter()
-                    .map(|o| Route {
-                        output_id: o.id.clone(),
-                        gain: 1.0,
-                    })
-                    .collect();
-                config.lines.push(LineConfig {
-                    id: new_id("line"),
-                    name: "Mic".into(),
-                    kind: "mic".into(),
-                    color: "#fb923c".into(),
-                    input_device: None,
-                    gain: 1.0,
-                    muted: true, // retour micro désactivé par défaut
-                    eq: [0.0; 5],
-                    eq_bands: default_bands(),
-                    apps: Vec::new(),
-                    cable_render_id: None,
-                    routes,
-                    duck_reactivity: "normale".into(),
-                });
-            }
-            // Migration : chaque ligne doit sortir quelque part. Les routes
-            // orphelines sont nettoyées, et toute ligne sans sortie est
-            // branchée sur le périphérique de sortie par défaut de Windows
-            // (sauf si c'est un de nos câbles — boucle garantie sinon).
-            {
-                let bus_ids: std::collections::HashSet<String> =
-                    config.outputs.iter().map(|o| o.id.clone()).collect();
-                for line in &mut config.lines {
-                    line.routes.retain(|r| bus_ids.contains(&r.output_id));
-                }
-                let default_dev = cpal::default_host()
-                    .default_output_device()
-                    .and_then(|d| d.name().ok())
-                    .filter(|n| !is_virtual_capture(n));
-                if let Some(dev) = default_dev {
-                    let needs: Vec<usize> = (0..config.lines.len())
-                        .filter(|&i| config.lines[i].routes.is_empty())
-                        .collect();
-                    if !needs.is_empty() {
-                        let bus_id = match config.outputs.iter().find(|o| o.device == dev) {
-                            Some(o) => o.id.clone(),
-                            None => {
-                                let id = new_id("out");
-                                let name = dev.split(" (").next().unwrap_or(&dev).to_string();
-                                config.outputs.push(OutputConfig {
-                                    id: id.clone(),
-                                    name,
-                                    device: dev.clone(),
-                                    gain: 1.0,
-                                    muted: false,
-                                });
-                                id
-                            }
-                        };
-                        for i in needs {
-                            config.lines[i].routes.push(Route {
-                                output_id: bus_id.clone(),
-                                gain: 1.0,
-                            });
-                        }
-                    }
-                }
-                prune_unused_buses(&mut config);
-            }
-            // Claim free cables + rename their Windows endpoints so the
-            // lines exist as speakers in Windows from the very first launch.
-            auto_bind_lines(&mut config);
-            config.schema_version = CURRENT_SCHEMA_VERSION;
+            // Migrations de forme + garanties structurelles + appropriation
+            // des câbles — partagées avec `import_config`.
+            reconcile_config(&mut config);
             save_config(&config_path, &config);
             let controls = Controls::from_config(&config);
 
@@ -1734,7 +1837,8 @@ fn main() {
             delete_profile,
             set_profile_trigger,
             enable_streamer_mode,
-            check_for_update
+            check_for_update,
+            take_startup_notice
         ])
         .run(tauri::generate_context!())
         .expect("error while running MixFlow");
@@ -1824,6 +1928,53 @@ mod tests {
         assert!(cfg.ducking.iter().all(|d| d.source_line != "ligne-fantome"));
         assert!(cfg.ducking.iter().all(|d| d.source_line != d.target_line));
         assert!(cfg.ducking.iter().all(|d| (0.0..=1.0).contains(&d.amount)));
+    }
+
+    /// Le point clé de la sécurité de l'import : tous les champs d'AppConfig
+    /// étant `#[serde(default)]`, n'importe quel objet JSON se désérialise
+    /// sans erreur en une config VIDE. Sans ce filtre de forme, choisir un
+    /// mauvais .json dans le dialogue effaçait toute la configuration.
+    #[test]
+    fn import_rejects_json_that_is_not_a_mixflow_config() {
+        // Ceux-ci sont le vrai danger : serde les accepte SANS ERREUR et en
+        // fait une config vide — c'est exactement ce qui effaçait tout.
+        let silencieusement_acceptes_par_serde = [
+            r#"{}"#,
+            r#"{"name":"mixflow","version":"0.1.0","scripts":{"dev":"vite"}}"#, // package.json
+            r#"{"compilerOptions":{"strict":true}}"#,                           // tsconfig.json
+            r#"{"lines":[]}"#, // « outputs » manquant
+        ];
+        for src in silencieusement_acceptes_par_serde {
+            let v: serde_json::Value = serde_json::from_str(src).unwrap();
+            assert!(
+                serde_json::from_value::<AppConfig>(v.clone()).is_ok(),
+                "serde aurait dû l'accepter (c'est le piège) : {src}"
+            );
+            assert!(
+                !looks_like_mixflow_config(&v),
+                "aurait dû être refusé par le filtre de forme : {src}"
+            );
+        }
+
+        // Ceux-là, serde les rejette déjà ; le filtre les refuse aussi.
+        for src in [
+            r#"[]"#,
+            r#""juste une chaîne""#,
+            r#"{"lines":"pas un tableau","outputs":[]}"#,
+        ] {
+            let v: serde_json::Value = serde_json::from_str(src).unwrap();
+            assert!(
+                !looks_like_mixflow_config(&v),
+                "aurait dû être refusé : {src}"
+            );
+        }
+
+        // Une vraie config passe, y compris vidée de ses lignes.
+        let real = serde_json::to_value(default_config()).unwrap();
+        assert!(looks_like_mixflow_config(&real));
+        let emptied: serde_json::Value =
+            serde_json::from_str(r#"{"lines":[],"outputs":[]}"#).unwrap();
+        assert!(looks_like_mixflow_config(&emptied));
     }
 
     #[test]
