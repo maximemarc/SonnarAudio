@@ -8,7 +8,7 @@
 //! `Controls` and rebuilds the engine.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -35,6 +35,12 @@ pub struct LineCtl {
     /// Per-block decay applied to `env` when this line acts as a ducking
     /// SOURCE — derived from `LineConfig.duck_reactivity`.
     pub duck_decay: AtomicF32,
+    /// Incrémenté à chaque bloc capturé. `env` n'étant décrémentée QUE par
+    /// ce callback, un flux qui meurt en pleine parole la laissait figée
+    /// au-dessus du seuil : les cibles restaient atténuées à vie. Un
+    /// surveillant hors temps réel (thread `mixflow-levels`) compare ce
+    /// compteur d'un tick à l'autre et relâche `env` quand il stagne.
+    pub capture_tick: AtomicU32,
     /// Parametric EQ bands — written by the UI, `try_read` each block by
     /// the capture callback, which rebuilds only the coefficients that
     /// actually moved.
@@ -90,6 +96,7 @@ impl Controls {
                         peak: AtomicF32::new(0.0),
                         env: AtomicF32::new(0.0),
                         duck_decay: AtomicF32::new(reactivity_decay(&l.duck_reactivity)),
+                        capture_tick: AtomicU32::new(0),
                         eq: RwLock::new(l.eq_bands.clone()),
                         routes,
                     }),

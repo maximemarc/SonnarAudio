@@ -106,6 +106,10 @@ struct RenderInput {
     route: Arc<RouteCtl>,
     /// Smoothed effective gain (line × route × duck), per-sample one-pole.
     gain_sm: f32,
+    /// Nombre de blocs de rendu consécutifs où ce ring est resté vide.
+    /// Sert à distinguer un creux passager (à corriger par le servo) d'un
+    /// producteur MORT (à ignorer) — voir [`RenderState::render`].
+    empty_blocks: u32,
 }
 
 fn build(cfg: &AppConfig, controls: &Arc<Controls>) -> (Vec<Stream>, EngineStatus) {
@@ -148,6 +152,7 @@ fn build(cfg: &AppConfig, controls: &Arc<Controls>) -> (Vec<Stream>, EngineStatu
                     line: line_ctl,
                     route: route_ctl,
                     gain_sm: 0.0,
+                    empty_blocks: 0,
                 });
         }
     }
@@ -297,6 +302,11 @@ impl CaptureState {
         }
         let decay = self.ctl.duck_decay.get();
         self.ctl.env.set((self.ctl.env.get() * decay).max(peak));
+        // Battement de cœur : tant qu'il avance, le flux est vivant. S'il
+        // stagne (périphérique débranché, erreur WASAPI), le surveillant du
+        // thread `mixflow-levels` relâche `env` — sinon une source qui meurt
+        // en pleine parole garderait ses cibles atténuées indéfiniment.
+        self.ctl.capture_tick.fetch_add(1, Ordering::Relaxed);
 
         // Fan out to every routed output. If a ring is full (render device
         // stalled, or its clock runs slower), the excess is dropped — the
@@ -421,17 +431,40 @@ impl RenderState {
         // without correction the rings slowly drain (crackles) or grow
         // (latency). Nudge the consumption rate ±0.3% — inaudible — to keep
         // the emptiest ring pinned at the target prefill.
-        if !self.inputs.is_empty() {
-            let fill = self
-                .inputs
-                .iter()
-                .map(|i| i.cons.occupied_len() / 2)
-                .min()
-                .unwrap_or(PREFILL_FRAMES) as f32;
-            self.fill_avg += (fill - self.fill_avg) * 0.02;
+        // Un ring dont le producteur est MORT (capture qui a échoué à
+        // l'ouverture, ou flux tué en cours de session : le consumer reste
+        // dans `inputs`) reste vide pour toujours. Comme le servo s'asservit
+        // sur le MINIMUM, ce zéro permanent épinglait le trim à -0,3 % : le
+        // rendu consommait trop lentement, les rings des lignes SAINES du
+        // même bus grandissaient sans fin, la latence montait puis
+        // `push_slice` jetait le trop-plein — craquements sur tout le bus.
+        // On exclut donc un ring vide depuis assez longtemps pour qu'aucun
+        // creux passager ne puisse en être la cause (un vrai producteur
+        // pousse quelque chose bien avant ~2 s).
+        const DEAD_AFTER_EMPTY_BLOCKS: u32 = 200;
+        for input in &mut self.inputs {
+            if input.cons.occupied_len() == 0 {
+                input.empty_blocks = input.empty_blocks.saturating_add(1);
+            } else {
+                input.empty_blocks = 0;
+            }
+        }
+        let fill = self
+            .inputs
+            .iter()
+            .filter(|i| i.empty_blocks < DEAD_AFTER_EMPTY_BLOCKS)
+            .map(|i| i.cons.occupied_len() / 2)
+            .min();
+        if let Some(fill) = fill {
+            self.fill_avg += (fill as f32 - self.fill_avg) * 0.02;
             let error = (self.fill_avg - PREFILL_FRAMES as f32) / PREFILL_FRAMES as f32;
             self.resampler
                 .set_trim((error as f64 * 0.003).clamp(-0.003, 0.003));
+        } else {
+            // Aucune entrée vivante : rien à asservir, on revient au rythme
+            // nominal plutôt que de dériver sur une mesure fantôme.
+            self.fill_avg = PREFILL_FRAMES as f32;
+            self.resampler.set_trim(0.0);
         }
 
         let need = self.resampler.required_input(frames);
@@ -447,6 +480,15 @@ impl RenderState {
             if let Some(rules) = self.controls.ducking.try_read() {
                 for rule in rules.iter().filter(|r| r.target_line == input.line_id) {
                     if let Some(src) = self.controls.lines.get(&rule.source_line) {
+                        // Une source COUPÉE ne doit rien ducker : son
+                        // enveloppe est calculée côté capture, avant que le
+                        // mute (appliqué au rendu) n'entre en jeu. Sans ce
+                        // test, couper son micro (Ctrl+Alt+M) le rendait
+                        // inaudible pour tout le monde mais continuait à
+                        // baisser le jeu à chaque phrase.
+                        if src.muted.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         // Gate opens as the side-chain envelope crosses
                         // roughly -40 dBFS, fully open near -26 dBFS.
                         let gate = ((src.env.get() - 0.01) / 0.04).clamp(0.0, 1.0);

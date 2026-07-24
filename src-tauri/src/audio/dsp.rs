@@ -120,10 +120,14 @@ pub struct Resampler {
     step: f64,
     /// Fractional read position in "virtual index" space, where index 0 is
     /// the last frame of the previous block and index k (1..=n) is frame
-    /// k-1 of the current block.
+    /// k-1 of the current block. Peut être NÉGATIVE (jusqu'à -1) côté
+    /// rendu quand `step < 1` — voir [`process_exact`](Self::process_exact).
     pos: f64,
     /// Last frame of the previous block (interpolation continuity).
     prev: [f32; 2],
+    /// Avant-dernière frame du bloc précédent : sert quand `pos` repart
+    /// négative, cas où l'interpolation démarre à l'index virtuel -1.
+    prev2: [f32; 2],
     passthrough: bool,
 }
 
@@ -135,6 +139,7 @@ impl Resampler {
             step: ratio,
             pos: 0.0,
             prev: [0.0; 2],
+            prev2: [0.0; 2],
             passthrough: in_rate == out_rate,
         }
     }
@@ -154,14 +159,31 @@ impl Resampler {
         self.passthrough
     }
 
+    /// Frame à l'index virtuel donné : -1 = avant-dernière frame du bloc
+    /// précédent, 0 = dernière, k ≥ 1 = frame k-1 du bloc courant (bornée
+    /// à la dernière disponible en cas de sous-alimentation).
     #[inline]
-    fn frame_at(&self, input: &[f32], virtual_idx: usize) -> [f32; 2] {
-        if virtual_idx == 0 {
+    fn frame_at(&self, input: &[f32], virtual_idx: isize) -> [f32; 2] {
+        if virtual_idx <= -1 {
+            self.prev2
+        } else if virtual_idx == 0 {
             self.prev
         } else {
-            let i = (virtual_idx - 1) * 2;
-            [input[i], input[i + 1]]
+            let frames = input.len() / 2;
+            let f = ((virtual_idx as usize) - 1).min(frames.saturating_sub(1));
+            [input[f * 2], input[f * 2 + 1]]
         }
+    }
+
+    /// Mémorise les deux dernières frames du bloc pour la continuité.
+    #[inline]
+    fn remember_tail(&mut self, input: &[f32], n: usize) {
+        self.prev2 = if n >= 2 {
+            [input[(n - 2) * 2], input[(n - 2) * 2 + 1]]
+        } else {
+            self.prev
+        };
+        self.prev = [input[(n - 1) * 2], input[(n - 1) * 2 + 1]];
     }
 
     /// Capture side: consume a whole input block, append every producible
@@ -173,7 +195,9 @@ impl Resampler {
             return;
         }
         while self.pos < n as f64 {
-            let i = self.pos.floor() as usize; // 0..n-1 => a in {prev, input}
+            // La boucle garantit pos ≥ 0 ici (elle ne s'arrête qu'une fois
+            // pos ≥ n, et le rebasage laisse un résidu dans [0, step)).
+            let i = self.pos.floor() as isize;
             let frac = (self.pos - i as f64) as f32;
             let a = self.frame_at(input, i);
             let b = self.frame_at(input, i + 1);
@@ -182,7 +206,7 @@ impl Resampler {
             self.pos += self.step;
         }
         self.pos -= n as f64;
-        self.prev = [input[(n - 1) * 2], input[(n - 1) * 2 + 1]];
+        self.remember_tail(input, n);
     }
 
     /// Render side: how many input frames must be available to produce
@@ -194,7 +218,10 @@ impl Resampler {
             return 0;
         }
         let last_pos = self.pos + (out_frames as f64 - 1.0) * self.step;
-        (last_pos.floor() as usize) + 1
+        // `pos` peut être négative : passer par isize évite qu'un floor
+        // négatif casté en usize ne devienne une valeur astronomique.
+        let needed = last_pos.floor() as isize + 1;
+        needed.max(0) as usize
     }
 
     /// Render side: produce exactly `out_frames` frames into `out` from an
@@ -208,19 +235,27 @@ impl Resampler {
             return;
         }
         for _ in 0..out_frames {
-            let i = (self.pos.floor() as usize).min(n - 1);
+            let i = (self.pos.floor() as isize).min(n as isize - 1);
             let frac = (self.pos - i as f64) as f32;
             let a = self.frame_at(input, i);
-            let b = self.frame_at(input, (i + 1).min(n));
+            let b = self.frame_at(input, i + 1);
             out.push(a[0] + (b[0] - a[0]) * frac);
             out.push(a[1] + (b[1] - a[1]) * frac);
             self.pos += self.step;
         }
         self.pos -= n as f64;
-        if self.pos < 0.0 {
-            self.pos = 0.0;
+        // Le résidu vaut frac(dernière position) + step - 1, donc il descend
+        // jusqu'à step-1 : NÉGATIF dès que step < 1, c'est-à-dire dès que le
+        // périphérique de rendu tourne au-dessus de 48 kHz (96/192 kHz sont
+        // courants sur les DAC et casques USB). La prochaine interpolation
+        // démarre alors entre l'avant-dernière et la dernière frame de ce
+        // bloc — d'où `prev2`. L'ancien clamp à 0 jetait cette phase à
+        // CHAQUE bloc (~100 fois par seconde une fois le servo en trim), ce
+        // qui s'entend comme un crachotement périodique sur les aigus.
+        if self.pos < -1.0 {
+            self.pos = -1.0;
         }
-        self.prev = [input[(n - 1) * 2], input[(n - 1) * 2 + 1]];
+        self.remember_tail(input, n);
     }
 }
 
@@ -253,6 +288,43 @@ mod tests {
         let mut out = Vec::new();
         rs.process_exact(&input, 441, &mut out);
         assert_eq!(out.len(), 441 * 2);
+    }
+
+    /// Régression : sur une sortie PLUS RAPIDE que le domaine interne
+    /// (step < 1 — un DAC à 96 kHz), la position résiduelle repart
+    /// négative à certains blocs. L'ancien code la clampait à 0, jetant
+    /// jusqu'à un demi-échantillon de phase par bloc. Sur une rampe
+    /// parfaitement linéaire, un rééchantillonnage linéaire doit produire
+    /// une rampe d'incrément CONSTANT : tout clamp se voit comme un saut.
+    #[test]
+    fn exact_preserves_phase_across_blocks_when_upsampling() {
+        let (in_rate, out_rate) = (44_100u32, 96_000u32);
+        let mut rs = Resampler::new(in_rate, out_rate);
+        let expected = in_rate as f32 / out_rate as f32;
+
+        let mut produced: Vec<f32> = Vec::new();
+        let mut next_frame = 0.0f32; // rampe globale : frame k vaut k
+        for _ in 0..8 {
+            let need = rs.required_input(64);
+            let mut input = Vec::with_capacity(need * 2);
+            for _ in 0..need {
+                input.push(next_frame);
+                input.push(next_frame);
+                next_frame += 1.0;
+            }
+            let mut out = Vec::new();
+            rs.process_exact(&input, 64, &mut out);
+            produced.extend(out.iter().step_by(2));
+        }
+
+        // On saute l'amorçage (prev/prev2 partent à zéro).
+        let deltas: Vec<f32> = produced.windows(2).map(|w| w[1] - w[0]).collect();
+        for (i, d) in deltas.iter().enumerate().skip(8) {
+            assert!(
+                (d - expected).abs() < 1e-3,
+                "saut de phase à l'échantillon {i} : delta {d}, attendu {expected}"
+            );
+        }
     }
 
     #[test]

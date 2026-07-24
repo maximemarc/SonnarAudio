@@ -63,6 +63,15 @@ Frontend React (src/)  ── invoke ──▶  main.rs (commandes, état, persi
   (`dsp.rs`), ring buffers lock-free par route (`ringbuf`). Servo de dérive
   dans `RenderState::render` (±0.3 % de trim sur le resampler) pour garder
   le remplissage des rings calé sur `PREFILL_FRAMES` (~30 ms) sans craquer.
+  Le servo s'asservit sur le **minimum des rings VIVANTS** : un ring resté
+  vide plus de `DEAD_AFTER_EMPTY_BLOCKS` blocs (producteur mort — capture
+  qui a échoué ou flux tué) est exclu, sinon son zéro permanent épinglait
+  le trim et faisait saturer les rings sains du même bus.
+- **Phase du resampler** : `Resampler` garde **deux** frames d'historique
+  (`prev`/`prev2`). Côté rendu, la position résiduelle repart négative dès
+  que `step < 1` (périphérique de sortie au-dessus de 48 kHz) ; la clamper
+  à 0 jetait de la phase à chaque bloc — crachotement périodique audible.
+  Test de non-régression : `exact_preserves_phase_across_blocks_when_upsampling`.
 - **Deux familles de commandes** (main.rs) : _topologie_ (add/remove,
   devices, routes → rebuild complet du moteur) et _live_ (gains, mutes, EQ,
   ducking, master → atomics dans `controls.rs`, zéro glitch).
@@ -75,7 +84,13 @@ eq_bands`, freq 20-20k / gain ±12 dB, Q=1, écart mini `MIN_BAND_FREQ_RATIO`
   inchangées et éviter un clic. Champ `eq` = legacy 5 bandes, migré au
   démarrage.
 - **Ducking** : enveloppe par ligne (capture) + règles source→cible lues en
-  `try_read` dans le rendu.
+  `try_read` dans le rendu. Une source **muette** ne ducke rien (le mute
+  s'applique au rendu, l'enveloppe étant calculée avant — sans ce test,
+  Ctrl+Alt+M coupait le micro mais continuait de baisser le jeu). Et comme
+  `env` n'est décrémentée que par le callback de capture, un `capture_tick`
+  sert de battement de cœur : le thread `mixflow-levels` relâche
+  l'enveloppe quand le compteur stagne (flux mort), sinon les cibles
+  restaient atténuées à vie.
 - **Master global** : `master_gain` (config) multiplié sur chaque bus de
   sortie dans le rendu.
 - **Persistance débouncée** : les commandes _live_ posent juste un flag
@@ -83,6 +98,23 @@ eq_bands`, freq 20-20k / gain ±12 dB, Q=1, écart mini `MIN_BAND_FREQ_RATIO`
   flush sur disque toutes les ~800 ms, plus un flush best-effort au clic
   "Quitter" du tray. Les commandes _topologie_ (`rebuild()`) écrivent tout
   de suite — pas de debounce, elles sont peu fréquentes.
+  `save_config` écrit en **tmp + rename atomique**, et toute écriture se
+  fait **sous le verrou `config`** : trois threads peuvent la déclencher
+  (main, `mixflow-persist`, `mixflow-profiles`) et deux écritures
+  entrelacées produisaient un JSON tronqué, que `load_or_default`
+  remplaçait en silence par la config d'usine au démarrage suivant.
+- **`rebuild()` tient le verrou `config` de bout en bout** (clone → save →
+  swap des `Controls` → envoi au moteur). Sans ça, deux rebuilds
+  concurrents pouvaient laisser le moteur câblé sur un plan de contrôle
+  que plus aucune commande live n'écrivait : faders/mutes/EQ sans effet.
+  Aucun appelant ne doit donc déjà détenir ce verrou (parking_lot n'est
+  pas réentrant).
+- **`sanitize_config`** : tout ce qui vient du disque ou d'un import y
+  passe. Un JSON valide n'est pas sain — `"gain": 1e300` devient `+inf`
+  en f32, contamine le lissage de gain du rendu puis l'état des biquads
+  (ligne muette ou bruyante jusqu'au rebuild). La fonction borne
+  gains/EQ/ducking, dédoublonne ids et routes, purge les références
+  orphelines et applique la migration EQ legacy.
 - **`schema_version`** (`AppConfig`) : bumpé après les migrations de
   démarrage. Les migrations actuelles se basent sur la forme des données
   (`eq_bands.is_empty()`, etc.) et n'en ont pas besoin, mais une future
@@ -136,6 +168,12 @@ RouteCtl>` dans `controls.rs`, déjà lu dans `RenderState::render`
   dont l'id n'existe plus. Thread `mixflow-profiles` (2 s) compare
   `winapps::foreground_exe()` au `trigger_exe` de chaque profil et
   applique automatiquement (émet `config_updated` — voir plus bas).
+  Le **profil actif vit dans `AppState.active_profile`**, pas dans une
+  variable locale au thread : `apply_profile` (manuel) l'y écrit aussi,
+  sinon le thread ré-appliquait 2 s plus tard le profil que l'utilisateur
+  venait de poser à la main. `save_profile` ne photographie **pas** les
+  bus sans périphérique (`device: ""`), qu'`apply_profile_to_config`
+  filtre ensuite — la ligne se serait retrouvée sans aucune sortie.
 - **Raccourci global Ctrl+Alt+M** (`tauri-plugin-global-shortcut`) :
   bascule le mute de TOUTES les lignes `kind == "mic"` d'un coup (état
   "any unmuted" → tout couper, sinon tout réactiver). Live (atomics),
@@ -168,6 +206,22 @@ RouteCtl>` dans `controls.rs`, déjà lu dans `RenderState::render`
   erreur explicative ; à câbler pour de vrai une fois un remote GitHub
   avec des releases publiées et une clé de signature (`tauri signer
 generate`) disponibles.
+- Les commandes qui font du **COM ou de l'I/O bloquant sont `async`**
+  (`list_apps`, `assign_app_to_line`, `unassign_app_from_line`,
+  `import_config`, `export_config`) : une commande Tauri **synchrone**
+  s'exécute sur le thread principal tao, où un round-trip COM lent gelait
+  faders, tray et fenêtre. Règle à suivre pour toute nouvelle commande qui
+  touche Windows Audio ou un dialogue natif.
+- Un **câble virtuel servant de SORTIE** (montage streamer/OBS) n'est plus
+  considéré libre par `plan_cable_bindings`/`assign_app_to_line`
+  (`cable_used_as_output`, apparié par suffixe d'adaptateur) : `add_line`
+  se l'appropriait, renommait l'endpoint que le bus référence par nom et
+  tuait le flux stream, avec réinjection du mix diffusé dans une ligne.
+- **`cable_render_id` est revalidé** (`winapps::render_device_active`)
+  avant usage du cache : les ids MMDevice ne survivent pas à une
+  réinstallation de VB-Cable, et `SetPersistedDefaultAudioEndpoint`
+  accepte sans broncher un endpoint fantôme — les apps étaient routées
+  dans le vide, en silence.
 - **`add_line`/`remove_line`** font le travail COM bloquant (`winapps.rs`,
   qui spawn+join un thread par appel) **hors du verrou** `state.config` —
   motif à respecter pour toute nouvelle commande qui touche Windows Audio,

@@ -1559,23 +1559,47 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("mixflow-levels".into())
-                .spawn(move || loop {
-                    std::thread::sleep(Duration::from_millis(50));
-                    let state = handle.state::<AppState>();
-                    let controls = state.controls.read().clone();
-                    let mut lines = HashMap::new();
-                    for (id, ctl) in &controls.lines {
-                        let p = ctl.peak.get();
-                        ctl.peak.set(p * 0.5);
-                        lines.insert(id.clone(), p);
+                .spawn(move || {
+                    // id -> dernier `capture_tick` observé, pour repérer un
+                    // flux de capture mort (voir plus bas).
+                    let mut last_ticks: HashMap<String, u32> = HashMap::new();
+                    loop {
+                        std::thread::sleep(Duration::from_millis(50));
+                        let state = handle.state::<AppState>();
+                        let controls = state.controls.read().clone();
+                        let mut lines = HashMap::new();
+                        for (id, ctl) in &controls.lines {
+                            let p = ctl.peak.get();
+                            ctl.peak.set(p * 0.5);
+                            lines.insert(id.clone(), p);
+                            // `env` (side-chain du ducking) n'est décrémentée que
+                            // par le callback de capture. Si celui-ci s'arrête
+                            // alors que la ligne parlait, l'enveloppe reste figée
+                            // au-dessus du seuil et ses cibles restent atténuées
+                            // pour toujours. Un compteur qui stagne = flux mort :
+                            // on relâche l'enveloppe ici, hors du chemin temps
+                            // réel. Le lissage de gain du rendu (~10 ms) évite
+                            // tout clic au retour à la normale.
+                            let tick = ctl.capture_tick.load(Ordering::Relaxed);
+                            let stalled = last_ticks.insert(id.clone(), tick) == Some(tick);
+                            if stalled {
+                                let env = ctl.env.get();
+                                if env > 0.0 {
+                                    ctl.env.set(if env < 1e-4 { 0.0 } else { env * 0.5 });
+                                }
+                            }
+                        }
+                        let mut outputs = HashMap::new();
+                        for (id, ctl) in &controls.outputs {
+                            let p = ctl.peak.get();
+                            ctl.peak.set(p * 0.5);
+                            outputs.insert(id.clone(), p);
+                        }
+                        let _ = handle.emit("levels", LevelsPayload { lines, outputs });
+                        // Les lignes disparues (rebuild de topologie) ne doivent
+                        // pas faire grossir la table indéfiniment.
+                        last_ticks.retain(|id, _| controls.lines.contains_key(id));
                     }
-                    let mut outputs = HashMap::new();
-                    for (id, ctl) in &controls.outputs {
-                        let p = ctl.peak.get();
-                        ctl.peak.set(p * 0.5);
-                        outputs.insert(id.clone(), p);
-                    }
-                    let _ = handle.emit("levels", LevelsPayload { lines, outputs });
                 })
                 .expect("failed to spawn levels thread");
 
