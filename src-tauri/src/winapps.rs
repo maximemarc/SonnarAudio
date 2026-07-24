@@ -257,6 +257,32 @@ pub fn render_id_for_capture(capture_name: &str) -> Result<String, String> {
     })
 }
 
+/// L'endpoint de rendu d'id `device_id` existe-t-il encore, et est-il actif ?
+///
+/// Les ids MMDevice ne survivent PAS à une désinstallation/réinstallation du
+/// driver VB-Cable : Windows regénère le GUID d'endpoint. Comme
+/// `SetPersistedDefaultAudioEndpoint` accepte volontiers un chemin SWD vers
+/// un périphérique absent (Windows persiste sciemment des routes vers du
+/// matériel débranché), un `cable_render_id` périmé enverrait les apps vers
+/// un endpoint fantôme sans la moindre erreur — d'où cette revalidation
+/// avant tout usage du cache. En cas d'échec COM on répond `false` :
+/// l'appelant refait alors une résolution par nom, qui est le comportement
+/// sûr.
+pub fn render_device_active(device_id: &str) -> bool {
+    let id = device_id.to_string();
+    in_com_thread(move || unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(err("device enumerator"))?;
+        let device = enumerator
+            .GetDevice(&HSTRING::from(id.as_str()))
+            .map_err(err("device lookup"))?;
+        let state = device.GetState().map_err(err("device state"))?;
+        Ok(state == DEVICE_STATE_ACTIVE)
+    })
+    .unwrap_or(false)
+}
+
 /// PIDs of every audio session currently owned by `exe` (case-insensitive).
 fn pids_for_exe(exe: &str) -> Result<Vec<u32>, String> {
     let target = exe.to_lowercase();

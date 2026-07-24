@@ -77,6 +77,109 @@ fn sanitize_bands(mut bands: Vec<EqBandCfg>) -> Vec<EqBandCfg> {
     }
     bands
 }
+
+fn finite_or(v: f32, fallback: f32) -> f32 {
+    if v.is_finite() {
+        v
+    } else {
+        fallback
+    }
+}
+
+/// Ramène une config venue du disque ou d'un import aux invariants que le
+/// reste du code suppose. Les commandes live clampent leurs entrées une par
+/// une, mais un JSON écrit à la main peut porter n'importe quoi : un gain
+/// `1e300` devient `inf` en f32 (serde passe par f64 puis cast), l'inf
+/// contamine le lissage de gain du rendu ((inf-inf)*k = NaN) puis l'état
+/// des biquads — canal définitivement muet ou bruit fort. On borne donc
+/// tout, on dédoublonne ids et routes (deux routes vers le même bus = deux
+/// ring buffers = son doublé), on purge les références orphelines et on
+/// applique la migration EQ legacy (un export d'une vieille version
+/// n'aurait sinon jamais de bandes paramétriques).
+fn sanitize_config(cfg: &mut AppConfig) {
+    use std::collections::HashSet;
+
+    let mut seen_outs = HashSet::new();
+    cfg.outputs.retain(|o| seen_outs.insert(o.id.clone()));
+    let mut seen_lines = HashSet::new();
+    cfg.lines.retain(|l| seen_lines.insert(l.id.clone()));
+
+    for o in &mut cfg.outputs {
+        o.gain = finite_or(o.gain, 1.0).clamp(0.0, 1.5);
+    }
+
+    let bus_ids: HashSet<String> = cfg.outputs.iter().map(|o| o.id.clone()).collect();
+    for line in &mut cfg.lines {
+        line.gain = finite_or(line.gain, 1.0).clamp(0.0, 1.5);
+        if line.eq_bands.is_empty() {
+            line.eq_bands = EQ_FREQS
+                .iter()
+                .zip(line.eq.iter())
+                .map(|(&freq, &gain)| EqBandCfg { freq, gain })
+                .collect();
+        }
+        for b in &mut line.eq_bands {
+            b.freq = finite_or(b.freq, 1_000.0);
+            b.gain = finite_or(b.gain, 0.0);
+        }
+        line.eq_bands = sanitize_bands(std::mem::take(&mut line.eq_bands));
+        if !matches!(
+            line.duck_reactivity.as_str(),
+            "douce" | "normale" | "rapide"
+        ) {
+            line.duck_reactivity = "normale".into();
+        }
+        let mut seen_routes = HashSet::new();
+        line.routes
+            .retain(|r| bus_ids.contains(&r.output_id) && seen_routes.insert(r.output_id.clone()));
+        for r in &mut line.routes {
+            r.gain = finite_or(r.gain, 1.0).clamp(0.0, 1.5);
+        }
+    }
+
+    cfg.master_gain = finite_or(cfg.master_gain, 1.0).clamp(0.0, 1.0);
+
+    let line_ids: HashSet<String> = cfg.lines.iter().map(|l| l.id.clone()).collect();
+    cfg.ducking
+        .retain(|d| line_ids.contains(&d.source_line) && line_ids.contains(&d.target_line));
+    for d in &mut cfg.ducking {
+        d.amount = finite_or(d.amount, 0.5).clamp(0.0, 1.0);
+    }
+
+    for p in &mut cfg.eq_presets {
+        if p.bands.is_empty() && p.gains.len() == EQ_FREQS.len() {
+            p.bands = EQ_FREQS
+                .iter()
+                .zip(p.gains.iter())
+                .map(|(&freq, &gain)| EqBandCfg { freq, gain })
+                .collect();
+        }
+        for b in &mut p.bands {
+            b.freq = finite_or(b.freq, 1_000.0);
+            b.gain = finite_or(b.gain, 0.0);
+        }
+        p.bands = sanitize_bands(std::mem::take(&mut p.bands));
+    }
+
+    for prof in &mut cfg.profiles {
+        prof.master_gain = finite_or(prof.master_gain, 1.0).clamp(0.0, 1.0);
+        prof.ducking
+            .retain(|d| line_ids.contains(&d.source_line) && line_ids.contains(&d.target_line));
+        for d in &mut prof.ducking {
+            d.amount = finite_or(d.amount, 0.5).clamp(0.0, 1.0);
+        }
+        for snap in &mut prof.lines {
+            snap.gain = finite_or(snap.gain, 1.0).clamp(0.0, 1.5);
+            for b in &mut snap.eq_bands {
+                b.freq = finite_or(b.freq, 1_000.0);
+                b.gain = finite_or(b.gain, 0.0);
+            }
+            snap.eq_bands = sanitize_bands(std::mem::take(&mut snap.eq_bands));
+            // Un bus jamais assigné à un périphérique se photographie en "".
+            snap.output_devices.retain(|d| !d.is_empty());
+        }
+    }
+}
 use winapps::AppInfo;
 
 // ---------------------------------------------------------------------------
@@ -96,13 +199,23 @@ struct AppState {
     /// second during a fader drag; flagging "needs a save" instead of
     /// writing synchronously every time avoids hammering disk I/O.
     dirty: AtomicBool,
+    /// Dernier profil appliqué — partagé entre la commande `apply_profile`
+    /// (manuelle) et le thread d'auto-switch, pour que le thread ne
+    /// ré-applique pas 2 s plus tard un profil que l'utilisateur vient de
+    /// poser à la main (rebuild inutile + réglages écrasés).
+    active_profile: Mutex<Option<String>>,
 }
 
 /// Write the config to disk right now if it's been marked dirty since the
 /// last flush. Used by the debounced-save thread and on quit.
+///
+/// L'écriture se fait SOUS le verrou config : elle est ainsi sérialisée
+/// avec celle de `rebuild()` (qui tient le même verrou), sinon un flush
+/// dont le clone date d'avant un rebuild concurrent pouvait réécrire une
+/// config périmée par-dessus la fraîche.
 fn flush_if_dirty(state: &AppState) {
     if state.dirty.swap(false, Ordering::Relaxed) {
-        let cfg = state.config.lock().clone();
+        let cfg = state.config.lock();
         save_config(&state.config_path, &cfg);
     }
 }
@@ -113,7 +226,13 @@ fn save_config(path: &Path, cfg: &AppConfig) {
     }
     match serde_json::to_string_pretty(cfg) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(path, json) {
+            // Écriture atomique (tmp + rename, MOVEFILE_REPLACE_EXISTING sous
+            // Windows) : un crash ou une coupure en pleine écriture ne peut
+            // plus laisser un JSON tronqué — que `load_or_default` aurait
+            // remplacé en silence par la config d'usine au démarrage suivant.
+            let tmp = path.with_extension("json.tmp");
+            let res = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path));
+            if let Err(e) = res {
                 eprintln!("[mixflow] failed to save config: {e}");
             }
         }
@@ -123,10 +242,18 @@ fn save_config(path: &Path, cfg: &AppConfig) {
 
 fn load_or_default(path: &Path) -> AppConfig {
     match std::fs::read_to_string(path) {
-        Ok(json) => serde_json::from_str(&json).unwrap_or_else(|e| {
-            eprintln!("[mixflow] config unreadable ({e}), starting fresh");
-            default_config()
-        }),
+        Ok(json) => match serde_json::from_str::<AppConfig>(&json) {
+            Ok(mut cfg) => {
+                // Le fichier peut avoir été édité à la main : mêmes garde-fous
+                // qu'à l'import.
+                sanitize_config(&mut cfg);
+                cfg
+            }
+            Err(e) => {
+                eprintln!("[mixflow] config unreadable ({e}), starting fresh");
+                default_config()
+            }
+        },
         Err(_) => default_config(),
     }
 }
@@ -187,8 +314,20 @@ fn default_config() -> AppConfig {
 
 /// Persist the current config, snapshot fresh Controls from it, swap them in
 /// and ask the engine thread to rebuild every stream.
+///
+/// Le verrou config est tenu d'un bout à l'autre, pour deux raisons :
+/// 1. deux rebuilds concurrents (main thread vs thread mixflow-profiles)
+///    pouvaient entrelacer leurs swaps de Controls et leurs envois au
+///    moteur — le moteur finissait câblé sur un plan de contrôle que plus
+///    aucune commande live n'écrivait (faders/mutes sans effet audible) ;
+/// 2. une commande live qui s'intercalait entre le clone et le swap
+///    écrivait sa valeur dans l'ANCIEN Controls, perdue après le swap.
+///
+/// Aucun appelant de `rebuild` ne tient déjà ce verrou (vérifié — sinon
+/// deadlock, parking_lot n'est pas réentrant).
 fn rebuild(state: &AppState) {
-    let cfg = state.config.lock().clone();
+    let cfg_guard = state.config.lock();
+    let cfg = cfg_guard.clone();
     save_config(&state.config_path, &cfg);
     let controls = Controls::from_config(&cfg);
     *state.controls.write() = controls.clone();
@@ -196,6 +335,7 @@ fn rebuild(state: &AppState) {
         .engine_tx
         .lock()
         .send(EngineMsg::Rebuild(cfg, controls));
+    drop(cfg_guard);
 }
 
 /// Mark the config dirty — used by live commands where the atomics were
@@ -231,6 +371,26 @@ fn auto_bind_lines(cfg: &mut AppConfig) {
     apply_cable_bindings(cfg, resolved);
 }
 
+/// Suffixe d'adaptateur "(VB-Audio …)" d'un nom d'endpoint — la partie que
+/// MixFlow ne renomme jamais (voir `render_id_for_capture`).
+fn adapter_suffix(name: &str) -> Option<&str> {
+    name.rfind('(').map(|i| &name[i..])
+}
+
+/// Le côté RENDU de ce câble sert-il de périphérique à un bus de sortie
+/// (montage streamer : les lignes jouent vers un câble capturé par OBS) ?
+/// Un tel câble n'est PAS libre : se l'approprier comme source renommerait
+/// l'endpoint que le bus référence par NOM (flux stream tué au rebuild
+/// suivant) et réinjecterait le mix diffusé dans une ligne (boucle).
+fn cable_used_as_output(cfg: &AppConfig, capture_name: &str) -> bool {
+    let Some(suffix) = adapter_suffix(capture_name) else {
+        return false;
+    };
+    cfg.outputs
+        .iter()
+        .any(|o| is_virtual_capture(&o.device) && adapter_suffix(&o.device) == Some(suffix))
+}
+
 /// Phase 1 — pure, no I/O: which lines need a cable, and which free cable
 /// each one gets. Safe to call with just a snapshot/clone of the config.
 fn plan_cable_bindings(cfg: &AppConfig) -> Vec<(String, String)> {
@@ -253,7 +413,10 @@ fn plan_cable_bindings(cfg: &AppConfig) -> Vec<(String, String)> {
         if line.kind == "mic" || line.input_device.is_some() {
             continue;
         }
-        let Some(cable) = cables.iter().find(|c| !used.contains(c)) else {
+        let Some(cable) = cables
+            .iter()
+            .find(|c| !used.contains(c) && !cable_used_as_output(cfg, c))
+        else {
             break;
         };
         used.push(cable.clone());
@@ -275,7 +438,12 @@ fn resolve_cable_bindings(
             let line = cfg.lines.iter().find(|l| &l.id == line_id);
             let cached = line.and_then(|l| l.cable_render_id.clone());
             let name = line.map(|l| l.name.clone()).unwrap_or_default();
-            let render_id = cached.or_else(|| winapps::render_id_for_capture(cable).ok());
+            // Les ids MMDevice ne survivent pas à une réinstallation de
+            // VB-Cable : revalider le cache avant de s'en servir, sinon on
+            // route vers un endpoint fantôme (Windows accepte sans broncher).
+            let render_id = cached
+                .filter(|id| winapps::render_device_active(id))
+                .or_else(|| winapps::render_id_for_capture(cable).ok());
             if let Some(rid) = &render_id {
                 let _ = winapps::rename_render_device(rid, &name);
             }
@@ -325,8 +493,13 @@ fn get_config(state: State<AppState>) -> AppConfig {
 }
 
 /// Applications that currently own an audio session (volume-mixer style).
+///
+/// Async (comme toutes les commandes qui font du COM ou de l'I/O bloquant) :
+/// une commande synchrone s'exécute sur le thread principal tao, et une
+/// énumération de sessions qui traîne (driver Bluetooth capricieux) y
+/// gelait faders, tray et déplacement de fenêtre le temps du round-trip.
 #[tauri::command]
-fn list_apps() -> Result<Vec<AppInfo>, String> {
+async fn list_apps() -> Result<Vec<AppInfo>, String> {
     winapps::list_apps()
 }
 
@@ -349,10 +522,10 @@ struct AssignResult {
 ///    Windows output picker show "Game (VB-Audio Virtual Cable)"),
 /// 4. remember the app on the line and rebuild.
 #[tauri::command]
-fn assign_app_to_line(
+async fn assign_app_to_line(
     line_id: String,
     exe: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AssignResult, String> {
     // -- 1. resolve (or auto-pick) the line's cable, capture side ------------
     let (capture_name, cached_render_id, line_name) = {
@@ -387,7 +560,7 @@ fn assign_app_to_line(
                     .collect();
                 candidates
                     .into_iter()
-                    .find(|c| !used.contains(&c))
+                    .find(|c| !used.contains(&c) && !cable_used_as_output(&cfg, c))
                     .ok_or_else(|| {
                         "aucun câble virtuel libre — installe VB-Cable (et le pack A+B pour plus de lignes)"
                             .to_string()
@@ -398,10 +571,11 @@ fn assign_app_to_line(
     };
 
     // -- 2. resolve the cable's render side (id cached after the first time;
-    //       the pairing survives MixFlow's own endpoint renames) -------------
+    //       the pairing survives MixFlow's own endpoint renames, but NOT a
+    //       reinstall of VB-Cable — hence the revalidation) ------------------
     let render_id = match cached_render_id {
-        Some(id) => id,
-        None => winapps::render_id_for_capture(&capture_name)?,
+        Some(id) if winapps::render_device_active(&id) => id,
+        _ => winapps::render_id_for_capture(&capture_name)?,
     };
     winapps::route_app_by_id(&exe, &render_id)?;
 
@@ -442,10 +616,10 @@ fn assign_app_to_line(
 
 /// Remove an app from a line and hand its audio back to the system default.
 #[tauri::command]
-fn unassign_app_from_line(
+async fn unassign_app_from_line(
     line_id: String,
     exe: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppConfig, String> {
     // Best-effort: if the app has no live session, Windows keeps the old
     // persisted route until the app is re-assigned; nothing else we can do.
@@ -920,7 +1094,10 @@ fn set_line_duck_reactivity(id: String, level: String, state: State<AppState>) {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn export_config(app: AppHandle, state: State<AppState>) -> Result<Option<String>, String> {
+async fn export_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let cfg = state.config.lock().clone();
     let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
@@ -939,7 +1116,10 @@ fn export_config(app: AppHandle, state: State<AppState>) -> Result<Option<String
 }
 
 #[tauri::command]
-fn import_config(app: AppHandle, state: State<AppState>) -> Result<Option<AppConfig>, String> {
+async fn import_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<AppConfig>, String> {
     use tauri_plugin_dialog::DialogExt;
     let Some(path) = app
         .dialog()
@@ -951,8 +1131,13 @@ fn import_config(app: AppHandle, state: State<AppState>) -> Result<Option<AppCon
     };
     let path_buf = path.into_path().map_err(|e| e.to_string())?;
     let json = std::fs::read_to_string(&path_buf).map_err(|e| e.to_string())?;
-    let imported: AppConfig =
+    let mut imported: AppConfig =
         serde_json::from_str(&json).map_err(|e| format!("fichier invalide : {e}"))?;
+    // Un JSON syntaxiquement valide n'est pas pour autant sain : sans ce
+    // passage, un `"gain": 1e300` (→ +inf en f32) contaminait le lissage de
+    // gain du rendu puis l'état des biquads, laissant la ligne muette ou
+    // bruyante jusqu'au prochain rebuild. Mêmes garde-fous qu'au démarrage.
+    sanitize_config(&mut imported);
     let cfg_after = {
         let mut cfg = state.config.lock();
         *cfg = imported;
@@ -978,6 +1163,11 @@ fn save_profile(name: String, trigger_exe: Option<String>, state: State<AppState
                 gain: l.gain,
                 muted: l.muted,
                 eq_bands: l.eq_bands.clone(),
+                // Un bus jamais assigné à un périphérique porte device "" (état
+                // livré par défaut). Le photographier tel quel produisait un
+                // snapshot [""] que `apply_profile_to_config` filtre ensuite —
+                // la ligne se retrouvait alors SANS AUCUNE sortie, mix muet et
+                // sans avertissement. On ne photographie que le concret.
                 output_devices: l
                     .routes
                     .iter()
@@ -987,6 +1177,7 @@ fn save_profile(name: String, trigger_exe: Option<String>, state: State<AppState
                             .find(|o| o.id == r.output_id)
                             .map(|o| o.device.clone())
                     })
+                    .filter(|d| !d.is_empty())
                     .collect(),
             })
             .collect();
@@ -1022,6 +1213,11 @@ fn apply_profile(id: String, state: State<AppState>) -> Result<AppConfig, String
         cfg.clone()
     };
     rebuild(&state);
+    // Mémorisé dans l'état PARTAGÉ (pas dans une variable locale au thread
+    // d'auto-switch) : sans ça, le thread ré-appliquait 2 s plus tard le
+    // profil que l'utilisateur venait de poser à la main, écrasant ses
+    // réglages sous ses yeux.
+    *state.active_profile.lock() = Some(id);
     Ok(cfg_after)
 }
 
@@ -1056,11 +1252,12 @@ fn set_profile_trigger(
 /// Auto-switch: called every ~2 s from a dedicated thread (see `main`) with
 /// the current foreground exe. Applies the first profile whose trigger
 /// matches, if it isn't already the active one.
-fn maybe_apply_triggered_profile(
-    app: &AppHandle,
-    active: &mut Option<String>,
-    foreground_exe: &str,
-) {
+///
+/// Le « profil actif » vit dans `AppState` et non dans le thread : la
+/// commande `apply_profile` l'y écrit aussi, donc un profil appliqué à la
+/// main n'est plus ré-appliqué (et les réglages faits ensuite plus
+/// écrasés) au tick suivant.
+fn maybe_apply_triggered_profile(app: &AppHandle, foreground_exe: &str) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
@@ -1079,7 +1276,7 @@ fn maybe_apply_triggered_profile(
     let Some(target_id) = target else {
         return;
     };
-    if active.as_deref() == Some(target_id.as_str()) {
+    if state.active_profile.lock().as_deref() == Some(target_id.as_str()) {
         return;
     }
     let profile = {
@@ -1096,7 +1293,7 @@ fn maybe_apply_triggered_profile(
     };
     rebuild(&state);
     let _ = app.emit("config_updated", &cfg_after);
-    *active = Some(target_id);
+    *state.active_profile.lock() = Some(target_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,6 +1551,7 @@ fn main() {
                 engine_tx: Mutex::new(tx),
                 config_path,
                 dirty: AtomicBool::new(false),
+                active_profile: Mutex::new(None),
             });
 
             // VU meter pump: 20 Hz "levels" event. Peaks are read-and-halved
@@ -1448,13 +1646,10 @@ fn main() {
             let handle4 = app.handle().clone();
             std::thread::Builder::new()
                 .name("mixflow-profiles".into())
-                .spawn(move || {
-                    let mut active: Option<String> = None;
-                    loop {
-                        std::thread::sleep(Duration::from_secs(2));
-                        if let Some(fg) = winapps::foreground_exe() {
-                            maybe_apply_triggered_profile(&handle4, &mut active, &fg);
-                        }
+                .spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if let Some(fg) = winapps::foreground_exe() {
+                        maybe_apply_triggered_profile(&handle4, &fg);
                     }
                 })
                 .expect("failed to spawn profile-watch thread");
@@ -1517,6 +1712,62 @@ mod tests {
         assert_eq!(out[0].gain, -12.0);
         assert_eq!(out.last().unwrap().freq, 20_000.0);
         assert_eq!(out.last().unwrap().gain, 12.0);
+    }
+
+    /// Le cœur du garde-fou d'import : une valeur non finie ne doit JAMAIS
+    /// atteindre le moteur (un +inf contamine le lissage de gain puis l'état
+    /// des biquads, et la ligne reste muette ou bruyante).
+    #[test]
+    fn sanitize_config_rejects_non_finite_and_out_of_range_values() {
+        let mut cfg = default_config();
+        let line_id = cfg.lines[0].id.clone();
+        cfg.master_gain = f32::INFINITY;
+        {
+            let line = &mut cfg.lines[0];
+            line.gain = 1e30; // devient +inf côté f32 après un aller-retour JSON
+            line.eq_bands = vec![band(1_000.0, f32::NAN), band(2_000.0, 99.0)];
+            line.duck_reactivity = "n'importe quoi".into();
+        }
+        // Route vers un bus inexistant + doublon vers un bus valide.
+        let bus = cfg.outputs[0].id.clone();
+        cfg.lines[0].routes = vec![
+            Route {
+                output_id: "bus-fantome".into(),
+                gain: f32::NEG_INFINITY,
+            },
+            Route {
+                output_id: bus.clone(),
+                gain: 1.0,
+            },
+            Route {
+                output_id: bus.clone(),
+                gain: 1.0,
+            },
+        ];
+        // Règle de ducking pointant une ligne supprimée.
+        cfg.ducking.push(DuckRule {
+            source_line: "ligne-fantome".into(),
+            target_line: line_id.clone(),
+            amount: 42.0,
+        });
+
+        sanitize_config(&mut cfg);
+
+        assert!(cfg.master_gain.is_finite() && (0.0..=1.0).contains(&cfg.master_gain));
+        let line = cfg.lines.iter().find(|l| l.id == line_id).unwrap();
+        assert!(line.gain.is_finite() && (0.0..=1.5).contains(&line.gain));
+        assert!(line
+            .eq_bands
+            .iter()
+            .all(|b| b.freq.is_finite() && b.gain.is_finite() && (-12.0..=12.0).contains(&b.gain)));
+        assert_eq!(line.duck_reactivity, "normale");
+        // Bus fantôme retiré, doublon dédoublonné : une seule route valide.
+        assert_eq!(line.routes.len(), 1);
+        assert_eq!(line.routes[0].output_id, bus);
+        assert!(line.routes.iter().all(|r| r.gain.is_finite()));
+        // La règle orpheline a disparu, les rescapées sont bornées.
+        assert!(cfg.ducking.iter().all(|d| d.source_line != "ligne-fantome"));
+        assert!(cfg.ducking.iter().all(|d| (0.0..=1.0).contains(&d.amount)));
     }
 
     #[test]
