@@ -23,12 +23,21 @@ import ProfilesPanel from "./components/ProfilesPanel";
 import DeviceSelect from "./components/DeviceSelect";
 import logo from "./assets/logo.png";
 
+/** Message de la bannière. `kind` pilote la couleur : seul `error` est rouge. */
+interface Notice {
+  kind: "error" | "info" | "success";
+  text: string;
+}
+
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [devices, setDevices] = useState<DeviceList>({ inputs: [], outputs: [] });
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [status, setStatus] = useState<EngineStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Bannière unique, TYPÉE : tout passait auparavant par un état `error`
+  // rendu en rouge, y compris « MixFlow est à jour » ou « Configuration
+  // importée » — un succès s'affichait donc comme une panne.
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [view, setView] = useState<"console" | "eq">("console");
   const [eqLineId, setEqLineId] = useState<string>("");
   // Canaux dont la sortie est "liée" : ajouter une sortie à l'un l'ajoute
@@ -40,12 +49,16 @@ export default function App() {
   // vanished mid-session (see main.rs's "mixflow-health" thread).
   const [deviceWarnings, setDeviceWarnings] = useState<string[]>([]);
 
+  const showError = useCallback((text: string) => setNotice({ kind: "error", text }), []);
+  const showInfo = useCallback((text: string) => setNotice({ kind: "info", text }), []);
+  const showSuccess = useCallback((text: string) => setNotice({ kind: "success", text }), []);
+
   const refreshApps = useCallback(() => {
     api
       .listApps()
       .then(setApps)
-      .catch((e) => setError(`Détection des applications : ${e}`));
-  }, []);
+      .catch((e) => showError(`Détection des applications : ${e}`));
+  }, [showError]);
 
   useEffect(() => {
     initLevels();
@@ -53,8 +66,9 @@ export default function App() {
     void api.listDevices().then(setDevices);
     void api.getAutostartEnabled().then(setAutostart);
     // Config illisible mise de côté au démarrage, etc. — sans ça le message
-    // ne partait qu'en stderr, invisible dans le binaire de release.
-    void api.takeStartupNotice().then((n) => n && setError(n));
+    // ne partait qu'en stderr, invisible dans le binaire de release. C'est
+    // un vrai incident (réglages perdus) : rouge assumé.
+    void api.takeStartupNotice().then((n) => n && showError(n));
     refreshApps();
     // Apps come and go — light periodic rescan + rescan when the window
     // regains focus (the user just launched something).
@@ -72,7 +86,7 @@ export default function App() {
       void unlistenCfg.then((f) => f());
       void unlistenWarn.then((f) => f());
     };
-  }, [refreshApps]);
+  }, [refreshApps, showError]);
 
   const refreshDevices = useCallback(() => {
     void api.listDevices().then(setDevices);
@@ -151,7 +165,7 @@ export default function App() {
     setAutostart(next); // optimiste : rollback si Windows refuse (rare, pas besoin d'admin)
     api.setAutostartEnabled(next).catch((e) => {
       setAutostart(!next);
-      setError(String(e));
+      showError(String(e));
     });
   };
 
@@ -198,7 +212,7 @@ export default function App() {
     api
       .applyProfile(id)
       .then(setConfig)
-      .catch((e) => setError(String(e)));
+      .catch((e) => showError(String(e)));
   const handleDeleteProfile = (id: string) => void api.deleteProfile(id).then(setConfig);
   const handleSetProfileTrigger = (id: string, triggerExe: string | null) =>
     void api.setProfileTrigger(id, triggerExe).then(setConfig);
@@ -206,11 +220,11 @@ export default function App() {
   const handleExportConfig = () => {
     api
       .exportConfig()
-      .then((path) => path && setError(`Configuration exportée : ${path}`))
-      .catch((e) => setError(String(e)));
+      .then((path) => path && showSuccess(`Configuration exportée : ${path}`))
+      .catch((e) => showError(String(e)));
   };
   const handleImportConfig = () => {
-    setError(null);
+    setNotice(null);
     api
       .importConfig()
       .then((cfg) => {
@@ -219,44 +233,42 @@ export default function App() {
         setConfig(cfg);
         refreshDevices();
         refreshApps();
-        setError(
+        showSuccess(
           "Configuration importée. L'ancienne a été sauvegardée à côté du fichier de config.",
         );
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => showError(String(e)));
   };
 
   const handleEnableStreamer = (device: string) =>
     void api.enableStreamerMode(device).then(setConfig);
 
   const handleCheckUpdate = () => {
-    setError("Recherche d'une mise à jour…");
+    showInfo("Recherche d'une mise à jour…");
     api
       .checkForUpdate()
       // La commande installe la mise à jour avant de rendre la main : le
       // message doit annoncer le redémarrage, pas une simple disponibilité.
       .then((v) =>
-        setError(
-          v
-            ? `Mise à jour v${v} installée — redémarre MixFlow pour l'appliquer.`
-            : "MixFlow est à jour.",
-        ),
+        v
+          ? showSuccess(`Mise à jour v${v} installée — redémarre MixFlow pour l'appliquer.`)
+          : showInfo("MixFlow est à jour."),
       )
-      .catch((e) => setError(String(e)));
+      .catch((e) => showError(String(e)));
   };
 
   // "Router vers" (dock) et drag-and-drop passent tous deux par ici.
   const assignAppTo = (lineId: string, exe: string) => {
-    setError(null);
+    setNotice(null);
     api
       .assignApp(lineId, exe)
       .then((res) => {
         setConfig(res.config);
-        if (res.notice) setError(res.notice);
+        if (res.notice) showInfo(res.notice);
         refreshApps();
         refreshDevices(); // le câble vient d'être renommé
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => showError(String(e)));
   };
 
   return (
@@ -348,9 +360,13 @@ export default function App() {
         </div>
       )}
 
-      {error && (
-        <div className="error-banner" onClick={() => setError(null)} title="Cliquer pour fermer">
-          {error}
+      {notice && (
+        <div
+          className={`notice-banner notice-${notice.kind}`}
+          onClick={() => setNotice(null)}
+          title="Cliquer pour fermer"
+        >
+          {notice.text}
         </div>
       )}
 
@@ -427,7 +443,7 @@ export default function App() {
                           setConfig(cfg);
                           refreshApps();
                         })
-                        .catch((e) => setError(String(e)));
+                        .catch((e) => showError(String(e)));
                     }}
                     onGain={(g) => {
                       patch((c) => {
