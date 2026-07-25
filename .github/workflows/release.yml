@@ -9,7 +9,19 @@ name: Release
 # les clients ne verront jamais la nouvelle version.
 on:
   push:
-    tags: ["v*.*.*"]
+    # Les filtres de tags sont SENSIBLES À LA CASSE et GitHub n'offre pas
+    # d'option pour l'ignorer : un tag `V0.1.0` ne déclenchait rien du tout,
+    # sans le moindre message — symptôme observé, très difficile à
+    # diagnostiquer. On accepte donc les deux casses.
+    tags: ["v*.*.*", "V*.*.*"]
+  # Filet de secours : relancer une release depuis l'onglet Actions quand le
+  # tag existe déjà (mauvaise casse, run annulé, secret ajouté après coup),
+  # sans avoir à supprimer puis recréer le tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag à publier (ex. v0.1.0) — doit déjà exister"
+        required: true
 
 # Créer la release et y attacher l'installeur exige un token en ÉCRITURE.
 # Le réglage par défaut du dépôt peut être « read-only » (c'est le défaut
@@ -22,7 +34,19 @@ jobs:
   build-installer:
     runs-on: windows-latest
     steps:
+      # Le tag visé : celui qui a déclenché le push, ou celui saisi en
+      # lancement manuel. Centralisé ici pour que checkout et tauri-action
+      # ne puissent pas diverger.
+      - name: Résoudre le tag
+        id: tag
+        shell: bash
+        run: echo "name=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v5
+        with:
+          # En lancement manuel, `github.ref` pointe sur la branche : il faut
+          # construire depuis le tag, pas depuis la tête de main.
+          ref: ${{ steps.tag.outputs.name }}
 
       - uses: actions/setup-node@v5
         with:
@@ -72,8 +96,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "MixFlow ${{ github.ref_name }}"
+          tagName: ${{ steps.tag.outputs.name }}
+          releaseName: "MixFlow ${{ steps.tag.outputs.name }}"
           # ATTENTION : tant que la release reste en BROUILLON, ses fichiers
           # ne sont pas servis par `releases/latest/download/…` — l'endpoint
           # de mise à jour renverra 404. Publier la release pour l'activer.
