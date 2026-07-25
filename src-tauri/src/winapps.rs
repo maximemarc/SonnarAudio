@@ -283,6 +283,29 @@ pub fn render_device_active(device_id: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Tous les PID à essayer pour router `exe`, les plus prometteurs d'abord.
+///
+/// Il ne suffit PAS de prendre les PID des sessions audio : les navigateurs
+/// Chromium (Brave, Chrome, Edge…) jouent le son depuis un processus
+/// utilitaire *sandboxé*, pour lequel Windows ne sait pas résoudre
+/// l'identité de l'application — `SetPersistedDefaultAudioEndpoint` y
+/// répond `E_INVALIDARG` (0x80070057). Le code s'arrêtait à cette liste dès
+/// qu'elle était non vide et n'essayait jamais le processus principal, seul
+/// capable d'accepter la route : le routage de Brave échouait donc
+/// systématiquement.
+///
+/// On concatène donc les deux sources en dédoublonnant, et l'appelant tente
+/// chaque PID jusqu'à ce que l'un accepte.
+fn candidate_pids(exe: &str) -> Vec<u32> {
+    let mut pids = pids_for_exe(exe).unwrap_or_default();
+    for pid in pids_running_exe(exe) {
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
 /// PIDs of every audio session currently owned by `exe` (case-insensitive).
 fn pids_for_exe(exe: &str) -> Result<Vec<u32>, String> {
     let target = exe.to_lowercase();
@@ -701,11 +724,7 @@ pub fn route_app_by_id(exe: &str, device_id: &str) -> Result<(), String> {
 }
 
 fn route_app_by_id_inner(exe: &str, device_id: &str) -> Result<(), String> {
-    // Session PIDs first, then plain running processes (idle app).
-    let mut pids = pids_for_exe(exe)?;
-    if pids.is_empty() {
-        pids = pids_running_exe(exe);
-    }
+    let pids = candidate_pids(exe);
     if pids.is_empty() {
         return Err(format!(
             "\"{exe}\" ne semble pas lancée — démarre l'application puis réessaie"
@@ -713,15 +732,17 @@ fn route_app_by_id_inner(exe: &str, device_id: &str) -> Result<(), String> {
     }
     let path = policy_device_path(device_id);
     let factory = policy_factory()?;
-    // Multi-process apps: it only takes one PID that Windows can resolve to
-    // the app's identity — tolerate per-PID failures, fail only if none took.
+    // Multi-process apps: it only takes one PID que Windows sait rattacher à
+    // l'identité de l'app — on tolère les échecs unitaires (les processus
+    // sandboxés des navigateurs répondent E_INVALIDARG) et on n'échoue que
+    // si AUCUN n'a accepté.
     let mut successes = 0;
     let mut last_err = String::new();
     unsafe {
-        for pid in pids {
+        for pid in &pids {
             for role in [ROLE_CONSOLE, ROLE_MULTIMEDIA] {
                 match factory
-                    .SetPersistedDefaultAudioEndpoint(pid, E_RENDER, role, hstring_raw(&path))
+                    .SetPersistedDefaultAudioEndpoint(*pid, E_RENDER, role, hstring_raw(&path))
                     .ok()
                 {
                     Ok(()) => successes += 1,
@@ -731,7 +752,11 @@ fn route_app_by_id_inner(exe: &str, device_id: &str) -> Result<(), String> {
         }
     }
     if successes == 0 {
-        return Err(format!("routage de {exe} refusé : {last_err}"));
+        return Err(format!(
+            "routage de {exe} refusé après {} processus essayé(s) : {last_err} — \
+             si l'app vient d'être lancée, fais-lui jouer un son puis réessaie",
+            pids.len()
+        ));
     }
     Ok(())
 }
@@ -745,10 +770,9 @@ pub fn unroute_app(exe: &str) -> Result<(), String> {
 }
 
 fn unroute_app_inner(exe: &str) -> Result<(), String> {
-    let mut pids = pids_for_exe(exe)?;
-    if pids.is_empty() {
-        pids = pids_running_exe(exe);
-    }
+    // Mêmes candidats qu'au routage : ne défaire que sur les PID de session
+    // laisserait la route persistée sur le processus principal.
+    let pids = candidate_pids(exe);
     if pids.is_empty() {
         return Ok(());
     }

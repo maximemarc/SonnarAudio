@@ -144,6 +144,15 @@ eq_bands`, freq 20-20k / gain ±12 dB, Q=1, écart mini `MIN_BAND_FREQ_RATIO`
 - Le **routage par app** (drag-drop) utilise l'interface non documentée
   `IAudioPolicyConfigFactory` (IID Win11 `ab3d4648-…`, style EarTrumpet) :
   Windows persiste l'assignation app→périphérique.
+- **Essayer TOUS les PID de l'exe, pas seulement ceux des sessions audio**
+  (`candidate_pids`) : les navigateurs Chromium (Brave, Chrome, Edge) jouent
+  le son depuis un processus utilitaire _sandboxé_, dont Windows ne sait pas
+  rattacher l'identité à l'application — `SetPersistedDefaultAudioEndpoint`
+  y répond `E_INVALIDARG` (0x80070057). Seul le processus principal accepte
+  la route. Le code s'arrêtait aux PID de session dès que la liste était non
+  vide : le routage de Brave échouait donc à tous les coups. On concatène
+  désormais sessions + processus vivants (dédoublonnés) et on n'échoue que
+  si aucun n'accepte.
 - La **détection d'apps** = sessions audio WASAPI sur tous les endpoints de
   rendu actifs + liste blanche d'apps connues en cours d'exécution
   (Discord, Spotify, navigateurs… — utile quand l'app est silencieuse).
