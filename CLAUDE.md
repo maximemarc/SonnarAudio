@@ -3,6 +3,22 @@
 Application desktop Windows de routage/mixage audio virtuel, clone de
 SteelSeries Sonar. Tauri 2 (Rust) + React/Vite. UI en français.
 
+## Outillage Claude Code (`.claude/`)
+
+Le détail est dans [.claude/README.md](.claude/README.md). En résumé :
+
+- **Skills** chargées automatiquement selon le sujet : `moteur-audio`,
+  `windows-audio`, `commande-tauri`, `ui-console`, `publier-version`.
+- **Commandes** : `/check` (batterie pré-PR), `/dev`, `/commit`,
+  `/diag-audio <symptôme>`, `/audit-deps`, `/release <version>`.
+- **Agents** de relecture : `revue-temps-reel`, `revue-windows-audio`.
+- **Hooks** : contrôle d'environnement au démarrage, blocage des commandes
+  qui déclenchent un piège ci-dessous (mojibake PowerShell, `--no-verify`,
+  suppression de `.cargo/config.toml`…), formatage automatique après édition.
+
+Ce fichier reste la source de vérité sur l'architecture ; les skills en
+détaillent des morceaux et ne s'y substituent pas.
+
 ## Commandes
 
 ```powershell

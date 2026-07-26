@@ -13,3 +13,9 @@ indent_size = 4
 
 [*.md]
 trim_trailing_whitespace = false
+
+# Hooks Claude Code : PowerShell 5.1 lit un .ps1 SANS BOM en ANSI
+# (Windows-1252) — les accents des messages sortent en mojibake. Le BOM
+# est ce qui force la lecture en UTF-8. Ne pas le retirer.
+[*.ps1]
+charset = utf-8-bom
