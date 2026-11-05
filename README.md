@@ -148,6 +148,46 @@ et **renomme leur côté "rendu" au nom du canal** — aucune manipulation de
 
 ---
 
+## 3 bis. Linux (PipeWire) — mélangeur par application
+
+Sous Linux, pas besoin de câbles virtuels : **PipeWire** sait déjà créer des
+sorties virtuelles et appliquer des filtres. MixFlow pilote donc PipeWire au
+lieu de mixer lui-même. Le frontend React est partagé ; `main.tsx` choisit la
+console Linux (`src/linux/`) quand la webview est WebKitGTK.
+
+```
+appli ──► sink virtuel « MixFlow · <appli> »    (mixflow.<slug>)
+            └─ 10 × bq_peaking (EQ) ─► linear (volume / mute)
+                 └─ flux mixflow.<slug>.out ─► sortie choisie (HDMI, casque, Bluetooth…)
+```
+
+- **Une chaîne par appli** : `libpipewire-module-filter-chain` hébergé par
+  un service systemd _utilisateur_ (`mixflow-chain@<slug>.service`, rattaché
+  à `pipewire.service`). Le son reste traité fenêtre fermée et au démarrage
+  de session, jeux Steam / Big Picture compris. Aucun droit root.
+- **Réglages à chaud** : volume, mute et EQ passent par `pw-cli set-param`
+  (graphe figé à 10 points, les points inutilisés restent neutres) — aucune
+  coupure. La conf de la chaîne est réécrite pour le prochain démarrage.
+- **Routage** : métadonnée `target.object` (celle que WirePlumber mémorise
+  par appli), donc une appli relancée retrouve sa chaîne même si MixFlow
+  n'est pas ouvert.
+- **Graphe** : `pw-dump --monitor` ; aucune dépendance à libpipewire.
+- **Réglages** : `~/.config/com.mixflow.app/mixflow-linux.json` + confs
+  des chaînes dans `~/.config/com.mixflow.app/chains/`.
+
+### Installation (Debian 13 / Ubuntu 24.04+)
+
+```bash
+sudo bash scripts/install-linux-deps.sh   # une fois : paquets de dev WebKitGTK…
+curl --proto '=https' -sSf https://sh.rustup.rs | sh   # Rust, si absent
+bash scripts/install-linux.sh             # compile + installe dans ~/.local
+```
+
+MixFlow apparaît alors dans le menu des applications (catégorie
+Multimédia). Une appli apparaît dès qu'elle ouvre un flux audio ; le premier
+réglage touché (volume, sortie ou EQ) lui crée sa chaîne. « × » sur une
+tranche oublie l'appli et supprime sa chaîne.
+
 ## 4. Fonctionnalités
 
 - ✅ Canaux virtuels auto-liés à un câble VB-Audio, renommés et

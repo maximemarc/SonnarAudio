@@ -373,7 +373,8 @@ export default function App() {
       {view === "eq" ? (
         <main className="content">
           <EqPage
-            config={config}
+            channels={config.lines}
+            customPresets={config.eq_presets}
             selectedId={eqLineId || config.lines[0]?.id || ""}
             onSelect={setEqLineId}
             onBands={(lineId, bands) => {

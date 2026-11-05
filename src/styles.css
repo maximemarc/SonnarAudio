@@ -1641,3 +1641,72 @@ button {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* -- Linux : tranches par application ------------------------------------------- */
+
+.lx-strip {
+  min-height: 430px;
+}
+.lx-strip.lx-playing .strip-glow {
+  opacity: 0.55;
+}
+.lx-app-icon {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+}
+.lx-app-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--font-heading-weight);
+  font-size: 13.5px;
+}
+.lx-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-top: -2px;
+}
+.lx-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dim) 50%, transparent);
+  flex: none;
+}
+.lx-dot.on {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+.lx-badge {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+/* WebKitGTK dessine les <select> en natif (fond clair du thème GTK) et
+   ignore alors `background` : texte clair sur fond blanc, illisible. On
+   reprend la main sur l'apparence, flèche comprise. */
+.lx {
+  color-scheme: dark;
+}
+.lx .device-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--inset);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239397ab' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+  text-overflow: ellipsis;
+}

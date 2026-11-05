@@ -1,7 +1,9 @@
 # MixFlow — CLAUDE.md
 
-Application desktop Windows de routage/mixage audio virtuel, clone de
-SteelSeries Sonar. Tauri 2 (Rust) + React/Vite. UI en français.
+Application desktop de routage/mixage audio virtuel, clone de SteelSeries
+Sonar. Tauri 2 (Rust) + React/Vite. UI en français. Deux backends :
+**Windows** (moteur maison cpal/WASAPI, `windows_app.rs`) et **Linux**
+(pilotage de PipeWire, `src-tauri/src/linux/` — voir la section dédiée).
 
 ## Commandes
 
@@ -291,7 +293,43 @@ Deux onglets (state `view` dans App.tsx) :
 - Les workflows GitHub Actions (`.github/workflows/`) sont écrits mais ce
   repo n'a pas (encore) de remote GitHub configuré.
 
+## Linux (PipeWire) — `src-tauri/src/linux/`, `src/linux/`
+
+- `main.rs` ne fait que dispatcher : `windows_app::run()` (ex-`main()`
+  Windows, intact) ou `linux::run()`. Crates Windows (`cpal`, `ringbuf`,
+  `windows*`) en `[target.'cfg(windows)'.dependencies]`.
+- Frontend : `main.tsx` rend `LinuxApp` si l'UA contient `Linux`.
+  `EqPage` est générique (`channels: EqChannel[]`, `customPresets`) et
+  partagé par les deux backends.
+- **Une chaîne filter-chain par appli**, service systemd utilisateur
+  `mixflow-chain@<slug>.service` (unité modèle écrite par `chain.rs` dans
+  `~/.config/systemd/user/`, `WantedBy=pipewire.service`). Graphe FIGÉ :
+  10 `bq_peaking` (`eq0..eq9`) + `linear` (`vol:Mult` = volume, 0 = mute).
+  Tout réglage est live via `pw-cli set-param <sink> Props` — ne jamais
+  changer la topologie du graphe pour un réglage, ça imposerait un
+  redémarrage de la chaîne (coupure).
+- Clé d'appli = `application.process.binary`, sinon `application.name`
+  (ex. `pw-play` n'a pas de binaire). Comparée sans casse.
+- **Routage** par la métadonnée `default` / `target.object` = `object.serial`
+  du nœud cible, type `Spa:Id` (comme WirePlumber lui-même). `"-1"` =
+  sortie par défaut. Appeler `pw-metadata -- <id> …` : sans `--`, `-1` est
+  lu comme une option. Les flux de chaînes ont `state.restore-target =
+false` et un `application.name` unique : WirePlumber ne doit pas leur
+  réappliquer une cible mémorisée d'une autre chaîne.
+- `pw-dump` : un retrait est `{"id": N, "info": null}`. Les objets
+  Metadata n'ont JAMAIS de clé `info` (props au premier niveau) — ne pas
+  traiter « pas d'info » comme un retrait.
+- `reconcile()` (thread `mixflow-route`, 4 Hz max) est idempotent : il ne
+  pousse une consigne que si elle diffère de la métadonnée actuelle et de
+  la dernière envoyée. Un sink de chaîne (ré)apparu reçoit l'état courant
+  (`pushed_sink`) — c'est ce qui rattrape un réglage fait pendant le
+  démarrage de la chaîne.
+- Tests : `cargo test` couvre model/chain/pw/icons sans PipeWire.
+
 ## Reste à faire / idées
+
+- Linux : VU-mètres (pas de niveaux remontés pour l'instant), gain par
+  sortie multiple (fan-out) comme sous Windows.
 
 - Support de l'IID AudioPolicyConfig pré-21H2 pour vieux Windows 10.
 - Personnalisation du raccourci global (Ctrl+Alt+M est câblé en dur dans

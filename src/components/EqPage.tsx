@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AppConfig, EqBand, EqPreset } from "../types";
+import type { EqBand, EqPreset } from "../types";
 import { BUILTIN_EQ_PRESETS, BUILTIN_MIC_EQ_PRESETS, DEFAULT_EQ_BANDS } from "../types";
 import { curvePoints, dbToY, freqToX, xToFreq, yToDb } from "../eqMath";
 import { MicIcon } from "./Icons";
@@ -94,8 +94,24 @@ function EqPointChip({
   );
 }
 
+/**
+ * Ce que l'égaliseur sait d'un canal : une ligne Windows (`LineConfig`) ou
+ * une application Linux (`AppView`) conviennent telles quelles.
+ */
+export interface EqChannel {
+  id: string;
+  name: string;
+  color: string;
+  kind?: string;
+  eq_bands: EqBand[];
+  /** Icône réelle (data-URI) ; à défaut, `pickIcon(name)`. */
+  icon?: string | null;
+}
+
 interface Props {
-  config: AppConfig;
+  channels: EqChannel[];
+  /** Presets enregistrés par l'utilisateur (ceux d'usine sont intégrés). */
+  customPresets: EqPreset[];
   selectedId: string;
   onSelect: (lineId: string) => void;
   /** La courbe change (drag, ajout, suppression, preset). */
@@ -105,7 +121,8 @@ interface Props {
 }
 
 export default function EqPage({
-  config,
+  channels,
+  customPresets,
   selectedId,
   onSelect,
   onBands,
@@ -122,7 +139,7 @@ export default function EqPage({
   const svgRef = useRef<SVGSVGElement>(null);
   const lastSent = useRef(0);
 
-  const line = config.lines.find((l) => l.id === selectedId) ?? config.lines[0];
+  const line = channels.find((l) => l.id === selectedId) ?? channels[0];
   const savedBands = useMemo(() => line?.eq_bands ?? [], [line]);
   const bands = dragBands ?? savedBands;
   const path = useMemo(() => curvePoints(bands, W, H), [bands]);
@@ -158,14 +175,22 @@ export default function EqPage({
     <div className="eq-page">
       {/* Sélecteur de canal */}
       <div className="eq-channels">
-        {config.lines.map((l) => (
+        {channels.map((l) => (
           <button
             key={l.id}
             className={`eq-chan ${l.id === line.id ? "on" : ""}`}
             style={{ "--accent": l.color } as React.CSSProperties}
             onClick={() => onSelect(l.id)}
           >
-            <span className="strip-icon">{l.kind === "mic" ? <MicIcon /> : pickIcon(l.name)}</span>
+            <span className="strip-icon">
+              {l.kind === "mic" ? (
+                <MicIcon />
+              ) : l.icon ? (
+                <img className="app-icon" src={l.icon} alt="" />
+              ) : (
+                pickIcon(l.name)
+              )}
+            </span>
             {l.name}
           </button>
         ))}
@@ -324,7 +349,7 @@ export default function EqPage({
               {p.name}
             </button>
           ))}
-          {config.eq_presets.map((p) => (
+          {customPresets.map((p) => (
             <span key={p.name} className={`eq-preset eq-preset-custom ${sameCurve(p) ? "on" : ""}`}>
               <button onClick={() => send([...p.bands], true)}>{p.name}</button>
               <button
