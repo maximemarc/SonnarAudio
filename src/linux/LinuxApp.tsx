@@ -81,7 +81,7 @@ export default function LinuxApp() {
   );
 
   return (
-    <div className="app">
+    <div className="app lx">
       <header className="topbar">
         <div className="brand">
           <img className="brand-mark" src={logo} alt="" />

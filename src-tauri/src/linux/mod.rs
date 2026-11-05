@@ -266,7 +266,7 @@ fn reconcile(inner: &Inner) {
     let mut routed = inner.routed.lock();
     routed.retain(|id, _| graph.nodes.contains_key(id));
 
-    let mut ask = |id: u32, value: Option<&str>, routed: &mut HashMap<u32, String>| {
+    let ask = |id: u32, value: Option<&str>, routed: &mut HashMap<u32, String>| {
         let v = value.unwrap_or("-1").to_string();
         let current = graph.targets.get(&id).map(String::as_str).unwrap_or("");
         if current == v || routed.get(&id) == Some(&v) {

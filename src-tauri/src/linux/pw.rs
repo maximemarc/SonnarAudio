@@ -81,6 +81,7 @@ impl Graph {
     }
 
     /// Nœuds vers lesquels `id` est actuellement relié.
+    #[cfg(test)]
     pub fn linked_to(&self, id: u32) -> impl Iterator<Item = u32> + '_ {
         self.links
             .values()
