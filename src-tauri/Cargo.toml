@@ -1,7 +1,7 @@
 [package]
 name = "mixflow"
 version = "0.1.0"
-description = "Virtual audio routing & mixing desktop app (SteelSeries Sonar-like)"
+description = "Virtual audio routing & mixing desktop app (SteelSeries Sonar-like) — Windows (WASAPI) & Linux (PipeWire)"
 edition = "2021"
 rust-version = "1.77"
 
@@ -25,12 +25,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Encodes extracted app icons as data-URIs for the frontend.
 base64 = "0.22"
+# Non-poisoning mutexes for app state.
+parking_lot = "0.12"
+
+# Windows uniquement : moteur audio maison. Sous Linux, PipeWire fait le
+# mixage et MixFlow pilote ses chaînes de filtres (voir src/linux/).
+[target.'cfg(windows)'.dependencies]
 # Cross-platform audio I/O — uses WASAPI on Windows (shared mode).
 cpal = "0.15"
 # Lock-free SPSC ring buffers between capture threads and render threads.
 ringbuf = "0.4"
-# Non-poisoning mutexes for app state.
-parking_lot = "0.12"
 # Raw Windows APIs: audio-session enumeration (which apps are playing sound)
 # and per-app output-device routing (the drag-and-drop feature).
 windows-core = "0.61"
