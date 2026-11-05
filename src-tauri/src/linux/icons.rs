@@ -223,7 +223,7 @@ fn walk_icons(dir: &Path, depth: u32, found: &mut HashMap<String, (u32, PathBuf)
         let Some(stem) = p.file_stem().map(|s| s.to_string_lossy().to_string()) else {
             continue;
         };
-        let better = found.get(&stem).map_or(true, |(s, _)| score > *s);
+        let better = found.get(&stem).is_none_or(|(s, _)| score > *s);
         if better {
             found.insert(stem, (score, p));
         }
