@@ -1,7 +1,8 @@
 /**
  * MixFlow sous Linux — mélangeur par application au-dessus de PipeWire.
  *
- * - Onglet Console : une tranche par appli qui joue du son (ou déjà réglée).
+ * - Onglet Console : la tranche « Son général » (sortie par défaut, VU),
+ *   puis une tranche par appli qui joue du son (ou déjà réglée).
  * - Onglet Égaliseur : la page EQ partagée avec Windows, sur la liste des
  *   applis au lieu des canaux.
  *
@@ -14,9 +15,11 @@ import { listen } from "@tauri-apps/api/event";
 import EqPage from "../components/EqPage";
 import type { EqBand } from "../types";
 import logo from "../assets/logo.png";
+import { initLevels } from "../levels";
 import * as api from "./api";
 import AppStrip from "./AppStrip";
-import type { AppView, LinuxState } from "./types";
+import GeneralStrip from "./GeneralStrip";
+import type { AppView, LinuxState, MasterView } from "./types";
 
 export default function LinuxApp() {
   const [state, setState] = useState<LinuxState | null>(null);
@@ -25,6 +28,7 @@ export default function LinuxApp() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    initLevels();
     void api.getState().then(setState);
     const unlisten = listen<LinuxState>("lx_state", (e) => setState(e.payload));
     return () => void unlisten.then((f) => f());
@@ -42,6 +46,16 @@ export default function LinuxApp() {
         fn(a);
         a.configured = true;
       }
+      return next;
+    });
+  }, []);
+
+  /** Patch optimiste du son général. */
+  const patchMaster = useCallback((fn: (m: MasterView) => void) => {
+    setState((s) => {
+      if (!s?.master) return s;
+      const next = structuredClone(s);
+      if (next.master) fn(next.master);
       return next;
     });
   }, []);
@@ -146,6 +160,26 @@ export default function LinuxApp() {
       ) : (
         <main className="content">
           <section className="console">
+            <div className="console-group">
+              <h2>Général</h2>
+              <div className="rail">
+                <GeneralStrip
+                  master={state.master}
+                  outputs={state.outputs}
+                  onVolume={(v) => {
+                    patchMaster((m) => (m.volume = v));
+                    api.setMasterVolume(v).catch(fail);
+                  }}
+                  onMute={(muted) => {
+                    patchMaster((m) => (m.muted = muted));
+                    api.setMasterMuted(muted).catch(fail);
+                  }}
+                  onDefaultOutput={(output) =>
+                    api.setDefaultOutput(output).then(setState).catch(fail)
+                  }
+                />
+              </div>
+            </div>
             <div className="console-group">
               <h2>Applications</h2>
               {active.length === 0 ? (

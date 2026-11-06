@@ -24,6 +24,10 @@ pub struct Node {
     /// `device.api` du périphérique (alsa, bluez5…), vide pour un flux.
     pub api: String,
     pub is_monitor_stream: bool,
+    /// Volume du nœud sur l'échelle de `wpctl` (racine cubique du gain
+    /// linéaire de `channelVolumes`), si PipeWire l'a publié.
+    pub volume: Option<f32>,
+    pub muted: bool,
 }
 
 impl Node {
@@ -113,7 +117,7 @@ impl Graph {
                 "PipeWire:Interface:Node" => {
                     let Some(info) = info else { continue };
                     let p = info.get("props").cloned().unwrap_or(Value::Null);
-                    let node = Node {
+                    let mut node = Node {
                         id,
                         serial: s(&p, "object.serial"),
                         name: s(&p, "node.name"),
@@ -133,7 +137,18 @@ impl Graph {
                         api: s(&p, "device.api"),
                         is_monitor_stream: s(&p, "stream.monitor") == "true"
                             || p.get("stream.capture.sink").is_some(),
+                        volume: None,
+                        muted: false,
                     };
+                    let props = info
+                        .get("params")
+                        .and_then(|ps| ps.get("Props"))
+                        .and_then(Value::as_array)
+                        .and_then(|a| a.first());
+                    if let Some(props) = props {
+                        node.volume = cubic_volume(props);
+                        node.muted = props.get("mute").and_then(Value::as_bool) == Some(true);
+                    }
                     self.nodes.insert(id, node);
                 }
                 "PipeWire:Interface:Link" => {
@@ -173,6 +188,18 @@ impl Graph {
             }
         }
     }
+}
+
+/// Moyenne des `channelVolumes` (gain linéaire), ramenée sur l'échelle
+/// cubique qu'affichent `wpctl` et les mélangeurs du bureau.
+fn cubic_volume(props: &Value) -> Option<f32> {
+    let vols = props.get("channelVolumes")?.as_array()?;
+    let vals: Vec<f64> = vols.iter().filter_map(Value::as_f64).collect();
+    if vals.is_empty() {
+        return None;
+    }
+    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+    Some(mean.max(0.0).cbrt() as f32)
 }
 
 /// Lance `pw-dump --monitor` et appelle `on_batch` pour chaque lot JSON
@@ -240,6 +267,30 @@ pub fn clear_target(stream_id: u32) -> Result<(), String> {
     )
 }
 
+/// Volume d'une sortie, sur l'échelle cubique de `wpctl` (1.0 = 100 %).
+pub fn set_volume(node_id: u32, volume: f32) -> Result<(), String> {
+    run(
+        "wpctl",
+        &["set-volume", &node_id.to_string(), &format!("{volume:.3}")],
+    )
+}
+
+pub fn set_mute(node_id: u32, muted: bool) -> Result<(), String> {
+    run(
+        "wpctl",
+        &[
+            "set-mute",
+            &node_id.to_string(),
+            if muted { "1" } else { "0" },
+        ],
+    )
+}
+
+/// Change la sortie par défaut du système (mémorisée par WirePlumber).
+pub fn set_default(node_id: u32) -> Result<(), String> {
+    run("wpctl", &["set-default", &node_id.to_string()])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,7 +302,8 @@ mod tests {
         g.apply(&[
             json!({"id": 50, "type": "PipeWire:Interface:Node", "info": {"state": "running",
                 "props": {"node.name": "alsa_output.hdmi", "media.class": "Audio/Sink",
-                          "node.description": "HDMI", "object.serial": 77}}}),
+                          "node.description": "HDMI", "object.serial": 77},
+                "params": {"Props": [{"mute": true, "channelVolumes": [0.064, 0.064]}]}}}),
             json!({"id": 90, "type": "PipeWire:Interface:Node", "info": {"state": "running",
                 "props": {"node.name": "Firefox", "media.class": "Stream/Output/Audio",
                           "application.process.binary": "firefox-esr", "object.serial": 120}}}),
@@ -270,6 +322,10 @@ mod tests {
         assert!(ff.is_app_playback());
         assert_eq!(ff.app_key().as_deref(), Some("firefox-esr"));
         assert_eq!(g.nodes[&50].serial, "77");
+        assert!(g.nodes[&50].muted);
+        let v = g.nodes[&50].volume.unwrap();
+        assert!((v - 0.4).abs() < 1e-3, "volume cubique attendu 0.4, lu {v}");
+        assert_eq!(ff.volume, None);
         assert_eq!(g.linked_to(90).collect::<Vec<_>>(), vec![50]);
         g.apply(&[
             json!({"id": 90, "info": null}),

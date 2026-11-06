@@ -30,4 +30,13 @@ export const savePreset = (name: string, bands: EqBand[]) =>
 
 export const deletePreset = (name: string) => invoke<LinuxState>("lx_delete_preset", { name });
 
+/** Volume de la sortie par défaut, 0..1 (échelle des mélangeurs du bureau). */
+export const setMasterVolume = (volume: number) => invoke<void>("lx_set_master_volume", { volume });
+
+export const setMasterMuted = (muted: boolean) => invoke<void>("lx_set_master_muted", { muted });
+
+/** Change la sortie par défaut du système (`node.name`). */
+export const setDefaultOutput = (output: string) =>
+  invoke<LinuxState>("lx_set_default_output", { output });
+
 export const dismissNotice = () => invoke<void>("lx_dismiss_notice");

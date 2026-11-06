@@ -35,7 +35,19 @@ export interface OutputView {
   bluetooth: boolean;
 }
 
+/** Le son général : la sortie par défaut du système. */
+export interface MasterView {
+  /** `node.name` de la sortie par défaut. */
+  name: string;
+  label: string;
+  /** Échelle de `wpctl` (1 = 100 %), null si PipeWire ne la publie pas. */
+  volume: number | null;
+  muted: boolean;
+}
+
 export interface LinuxState {
+  /** null tant qu'aucune sortie par défaut n'est connue. */
+  master: MasterView | null;
   apps: AppView[];
   outputs: OutputView[];
   default_output: string;

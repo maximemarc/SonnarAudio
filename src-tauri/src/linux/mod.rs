@@ -20,6 +20,7 @@
 
 mod chain;
 mod icons;
+mod meter;
 mod model;
 mod pw;
 
@@ -54,6 +55,8 @@ struct Inner {
     /// poussés : un sink qui (ré)apparaît reçoit l'état courant.
     pushed_sink: Mutex<HashMap<String, u32>>,
     notice: Mutex<Option<String>>,
+    /// Volume général demandé, pas encore envoyé à `wpctl` (coalescé).
+    pending_master: Mutex<Option<f32>>,
 }
 
 type Shared = Arc<Inner>;
@@ -85,8 +88,21 @@ struct OutputView {
     bluetooth: bool,
 }
 
+/// Le son général : la sortie par défaut du système.
+#[derive(Serialize, Clone)]
+struct MasterView {
+    /// `node.name` de la sortie par défaut.
+    name: String,
+    label: String,
+    /// Échelle de `wpctl` (1.0 = 100 %), `None` si PipeWire ne la publie pas.
+    volume: Option<f32>,
+    muted: bool,
+}
+
 #[derive(Serialize, Clone)]
 struct LinuxState {
+    /// Absent tant qu'aucune sortie par défaut n'est connue.
+    master: Option<MasterView>,
     apps: Vec<AppView>,
     outputs: Vec<OutputView>,
     /// `node.name` de la sortie par défaut du système.
@@ -246,7 +262,19 @@ fn build_state(inner: &Inner) -> LinuxState {
         .collect();
     outputs.sort_by(|a, b| a.label.cmp(&b.label));
 
+    let master = graph.node_by_name(&graph.default_sink).map(|n| MasterView {
+        name: n.name.clone(),
+        label: if n.description.is_empty() {
+            n.name.clone()
+        } else {
+            n.description.clone()
+        },
+        volume: n.volume,
+        muted: n.muted,
+    });
+
     LinuxState {
+        master,
         apps,
         outputs,
         default_output: graph.default_sink.clone(),
@@ -342,18 +370,40 @@ fn spawn_threads(app: AppHandle, inner: Shared) {
 
     // 2. Routage + notification de l'UI (au plus 4×/s).
     let i = inner.clone();
+    let a = app.clone();
     std::thread::Builder::new()
         .name("mixflow-route".into())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_millis(250));
             if i.graph_dirty.swap(false, Ordering::Relaxed) {
                 reconcile(&i);
-                let _ = app.emit("lx_state", build_state(&i));
+                let _ = a.emit("lx_state", build_state(&i));
             }
         })
         .expect("thread mixflow-route");
 
-    // 3. Paramètres live (coalescés) + sauvegarde différée.
+    // 3. VU du son général (relancé si pw-record s'arrête).
+    let a = app;
+    std::thread::Builder::new()
+        .name("mixflow-meter".into())
+        .spawn(move || loop {
+            let res = meter::run(|peak| {
+                // Même charge utile que le moteur Windows : `levels.ts` et
+                // `LevelBars` s'en servent tels quels (id "*" = agrégat).
+                let _ = a.emit(
+                    "levels",
+                    serde_json::json!({ "lines": {}, "outputs": { "master": peak } }),
+                );
+            });
+            if let Err(e) = res {
+                eprintln!("[mixflow] VU : {e}");
+            }
+            let _ = a.emit("levels", serde_json::json!({ "lines": {}, "outputs": {} }));
+            std::thread::sleep(Duration::from_secs(2));
+        })
+        .expect("thread mixflow-meter");
+
+    // 4. Paramètres live (coalescés) + sauvegarde différée.
     let i = inner;
     std::thread::Builder::new()
         .name("mixflow-apply".into())
@@ -361,6 +411,15 @@ fn spawn_threads(app: AppHandle, inner: Shared) {
             let mut last_change = Instant::now();
             loop {
                 std::thread::sleep(Duration::from_millis(40));
+                let master = i.pending_master.lock().take();
+                if let Some(v) = master {
+                    let id = default_sink_id(&i);
+                    if let Some(id) = id {
+                        if let Err(e) = pw::set_volume(id, v) {
+                            eprintln!("[mixflow] volume général : {e}");
+                        }
+                    }
+                }
                 let keys: Vec<String> = i.pending_apply.lock().drain().collect();
                 for k in keys {
                     let Some(app) = i.config.lock().find(&k).cloned() else {
@@ -526,6 +585,48 @@ async fn lx_delete_preset(name: String, state: State<'_, Shared>) -> Result<Linu
     Ok(build_state(&state))
 }
 
+fn default_sink_id(inner: &Inner) -> Option<u32> {
+    let g = inner.graph.lock();
+    g.node_by_name(&g.default_sink).map(|n| n.id)
+}
+
+/// Volume de la sortie par défaut (échelle `wpctl`, 0..1). Coalescé par le
+/// thread `mixflow-apply` : un fader tiré vite ne lance pas cent `wpctl`.
+#[tauri::command]
+async fn lx_set_master_volume(volume: f32, state: State<'_, Shared>) -> Result<(), String> {
+    let v = if volume.is_finite() {
+        volume.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    *state.pending_master.lock() = Some(v);
+    Ok(())
+}
+
+#[tauri::command]
+async fn lx_set_master_muted(muted: bool, state: State<'_, Shared>) -> Result<(), String> {
+    let id = default_sink_id(&state).ok_or("Aucune sortie par défaut.")?;
+    pw::set_mute(id, muted)
+}
+
+/// Change la sortie par défaut du système : les applis qui la suivent (et
+/// les chaînes réglées sur « Par défaut ») basculent dessus.
+#[tauri::command]
+async fn lx_set_default_output(
+    output: String,
+    state: State<'_, Shared>,
+) -> Result<LinuxState, String> {
+    let id = state
+        .graph
+        .lock()
+        .node_by_name(&output)
+        .filter(|n| n.is_hw_sink())
+        .map(|n| n.id)
+        .ok_or("Sortie introuvable (débranchée ?).")?;
+    pw::set_default(id)?;
+    Ok(build_state(&state))
+}
+
 #[tauri::command]
 async fn lx_dismiss_notice(state: State<'_, Shared>) -> Result<(), String> {
     *state.notice.lock() = None;
@@ -554,6 +655,7 @@ pub fn run() {
                 routed: Mutex::new(HashMap::new()),
                 pushed_sink: Mutex::new(HashMap::new()),
                 notice: Mutex::new(notice),
+                pending_master: Mutex::new(None),
             });
             app.manage(inner.clone());
 
@@ -585,6 +687,9 @@ pub fn run() {
             lx_forget_app,
             lx_save_preset,
             lx_delete_preset,
+            lx_set_master_volume,
+            lx_set_master_muted,
+            lx_set_default_output,
             lx_dismiss_notice,
         ])
         .run(tauri::generate_context!())

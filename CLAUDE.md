@@ -324,11 +324,21 @@ false` et un `application.name` unique : WirePlumber ne doit pas leur
   la dernière envoyée. Un sink de chaîne (ré)apparu reçoit l'état courant
   (`pushed_sink`) — c'est ce qui rattrape un réglage fait pendant le
   démarrage de la chaîne.
-- Tests : `cargo test` couvre model/chain/pw/icons sans PipeWire.
+- **Son général** (tranche « Général », toujours affichée) = la sortie par
+  défaut du système. Volume/mute lus dans `params.Props[0]` du sink
+  (`channelVolumes` linéaire → racine cubique = échelle de `wpctl`) et
+  écrits par `wpctl set-volume|set-mute` ; le volume est coalescé par
+  `mixflow-apply` (`pending_master`). Sortie par défaut : `wpctl set-default`.
+- **VU général** (`meter.rs`) : `pw-record` avec `stream.capture.sink=true`
+  SANS cible = moniteur de la sortie par défaut, suivi par WirePlumber quand
+  elle change. Crête émise en `levels` (`outputs.master`), la même charge
+  utile que Windows, donc `LevelBars`/`useLiveLevel` marchent tels quels.
+  Les propriétés `-P` sont du SPA-JSON : citer les valeurs avec espace.
+- Tests : `cargo test` couvre model/chain/pw/icons/meter sans PipeWire.
 
 ## Reste à faire / idées
 
-- Linux : VU-mètres (pas de niveaux remontés pour l'instant), gain par
+- Linux : VU par appli (seul le son général a un VU), gain par
   sortie multiple (fan-out) comme sous Windows.
 
 - Support de l'IID AudioPolicyConfig pré-21H2 pour vieux Windows 10.
