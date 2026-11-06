@@ -420,13 +420,16 @@ fn spawn_threads(app: AppHandle, inner: Shared) {
     std::thread::Builder::new()
         .name("mixflow-levels".into())
         .spawn(move || {
-            let mut tick = 0u32;
+            // Décompte plutôt que modulo : la forme qui convient à clippy
+            // change avec le MSRV (`is_multiple_of` n'existe qu'en 1.87+).
+            let mut until_sync = 0u32;
             loop {
-                if tick % 20 == 0 {
+                if until_sync == 0 {
                     let wanted = i.meters_wanted.lock().clone();
                     i.meters.sync(&wanted);
+                    until_sync = 20;
                 }
-                tick = tick.wrapping_add(1);
+                until_sync -= 1;
                 let mut lines = serde_json::Map::new();
                 let mut outputs = serde_json::Map::new();
                 for ((kind, id), peak) in i.meters.take() {
