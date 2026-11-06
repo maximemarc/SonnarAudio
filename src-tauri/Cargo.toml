@@ -42,6 +42,10 @@ windows = { version = "0.61", features = [
   "Win32_Media_Audio",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
+  # PROPVARIANT, IMMDevice::Activate, IPropertyStore::GetValue/SetValue.
+  # Longtemps activée « par hasard » via tao/wry (même version de `windows`) :
+  # depuis qu'ils sont passés à windows 0.62, il faut la demander nous-mêmes.
+  "Win32_System_Variant",
   "Win32_Devices_FunctionDiscovery",
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_Shell",
