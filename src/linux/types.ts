@@ -29,10 +29,17 @@ export interface AppView {
   eq_bands: EqBand[];
 }
 
+/** Une sortie physique ou Bluetooth (HDMI, casque, enceinte…). */
 export interface OutputView {
+  /** `node.name` PipeWire. */
   name: string;
   label: string;
   bluetooth: boolean;
+  /** Sortie par défaut du système (celle que suivent les applis non réglées). */
+  is_default: boolean;
+  /** Échelle de `wpctl` (1 = 100 %, max 1,5), null si non réglable. */
+  volume: number | null;
+  muted: boolean;
 }
 
 export interface LinuxState {

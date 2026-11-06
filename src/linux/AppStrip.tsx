@@ -7,6 +7,7 @@
  */
 
 import { useMemo } from "react";
+import LevelBars from "../components/LevelBars";
 import VSlider from "../components/VSlider";
 import { ChevronRightIcon, SpeakerIcon, SpeakerOffIcon } from "../components/Icons";
 import { pickIcon } from "../components/pickIcon";
@@ -115,6 +116,7 @@ export default function AppStrip({
       </button>
 
       <div className="strip-fader-row">
+        <LevelBars kind="lines" id={app.key} idle={app.streams > 0 && !app.muted} />
         <div className="strip-main">
           <VSlider
             variant="fader"

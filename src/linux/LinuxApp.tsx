@@ -1,7 +1,8 @@
 /**
  * MixFlow sous Linux — mélangeur par application au-dessus de PipeWire.
  *
- * - Onglet Console : une tranche par appli qui joue du son (ou déjà réglée).
+ * - Onglet Console : le bandeau des sorties (volume, mute, VU, sortie par
+ *   défaut), puis une tranche par appli qui joue du son (ou déjà réglée).
  * - Onglet Égaliseur : la page EQ partagée avec Windows, sur la liste des
  *   applis au lieu des canaux.
  *
@@ -14,9 +15,11 @@ import { listen } from "@tauri-apps/api/event";
 import EqPage from "../components/EqPage";
 import type { EqBand } from "../types";
 import logo from "../assets/logo.png";
+import { initLevels } from "../levels";
 import * as api from "./api";
 import AppStrip from "./AppStrip";
-import type { AppView, LinuxState } from "./types";
+import OutputsBar from "./OutputsBar";
+import type { AppView, LinuxState, OutputView } from "./types";
 
 export default function LinuxApp() {
   const [state, setState] = useState<LinuxState | null>(null);
@@ -25,6 +28,7 @@ export default function LinuxApp() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    initLevels();
     void api.getState().then(setState);
     const unlisten = listen<LinuxState>("lx_state", (e) => setState(e.payload));
     return () => void unlisten.then((f) => f());
@@ -42,6 +46,17 @@ export default function LinuxApp() {
         fn(a);
         a.configured = true;
       }
+      return next;
+    });
+  }, []);
+
+  /** Patch optimiste d'une sortie. */
+  const patchOutput = useCallback((name: string, fn: (o: OutputView) => void) => {
+    setState((s) => {
+      if (!s) return s;
+      const next = structuredClone(s);
+      const o = next.outputs.find((x) => x.name === name);
+      if (o) fn(o);
       return next;
     });
   }, []);
@@ -146,6 +161,21 @@ export default function LinuxApp() {
       ) : (
         <main className="content">
           <section className="console">
+            <div className="console-group lx-full">
+              <h2>Sorties</h2>
+              <OutputsBar
+                outputs={state.outputs}
+                onVolume={(name, v) => {
+                  patchOutput(name, (o) => (o.volume = v));
+                  api.setOutputVolume(name, v).catch(fail);
+                }}
+                onMute={(name, muted) => {
+                  patchOutput(name, (o) => (o.muted = muted));
+                  api.setOutputMuted(name, muted).catch(fail);
+                }}
+                onMakeDefault={(name) => api.setDefaultOutput(name).then(setState).catch(fail)}
+              />
+            </div>
             <div className="console-group">
               <h2>Applications</h2>
               {active.length === 0 ? (

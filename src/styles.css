@@ -1710,3 +1710,132 @@ button {
   padding-right: 24px;
   text-overflow: ellipsis;
 }
+
+/* -- Linux : bandeau des sorties ----------------------------------------------- */
+
+.lx-outputs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 980px;
+}
+.lx-out {
+  --accent: #5b8def;
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) auto 1fr 52px;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: var(--strip);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.lx-out-default {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.lx-out-muted .lx-range,
+.lx-out-muted .lx-hmeter {
+  opacity: 0.4;
+}
+.lx-out-name {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.lx-out-label {
+  font-size: 13px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lx-badge-default {
+  margin-left: 0;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.lx-out-make-default {
+  font-size: 11px;
+  color: var(--dim);
+  padding: 1px 0;
+}
+.lx-out-make-default:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.lx-out-fader {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lx-out-novol {
+  font-size: 12px;
+  color: var(--dim);
+}
+.lx-out-value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.lx-out-value.boost {
+  color: var(--warn);
+}
+
+.lx-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.lx-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0,
+    var(--accent) var(--fill),
+    var(--inset) var(--fill)
+  );
+}
+.lx-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #f1f1f4;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.lx-range-mark {
+  position: absolute;
+  top: 2px;
+  width: 1px;
+  height: 14px;
+  background: var(--dim);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.lx-hmeter {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--inset);
+  overflow: hidden;
+}
+.lx-hmeter-fill {
+  height: 100%;
+  transform-origin: left;
+  transform: scaleX(0);
+  background: linear-gradient(to right, var(--ok), var(--warn) 80%, var(--danger));
+}
+/* Le bandeau des sorties occupe toute la largeur, les applis passent dessous. */
+.lx .console-group.lx-full {
+  flex-basis: 100%;
+}
