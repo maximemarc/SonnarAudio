@@ -146,10 +146,15 @@ impl Meters {
 }
 
 /// Crête absolue d'un bloc de f32 little-endian.
+///
+/// Par index plutôt que `chunks_exact(4)` / `as_chunks::<4>()` : clippy
+/// réclame l'un ou l'autre selon le MSRV (`as_chunks` n'existe qu'en 1.88+).
 fn peak(bytes: &[u8]) -> f32 {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
+    (0..bytes.len() / 4)
+        .map(|i| {
+            let c = &bytes[i * 4..i * 4 + 4];
+            f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs()
+        })
         .filter(|v| v.is_finite())
         .fold(0.0, f32::max)
 }
