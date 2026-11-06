@@ -324,22 +324,28 @@ false` et un `application.name` unique : WirePlumber ne doit pas leur
   la dernière envoyée. Un sink de chaîne (ré)apparu reçoit l'état courant
   (`pushed_sink`) — c'est ce qui rattrape un réglage fait pendant le
   démarrage de la chaîne.
-- **Son général** (tranche « Général », toujours affichée) = la sortie par
-  défaut du système. Volume/mute lus dans `params.Props[0]` du sink
-  (`channelVolumes` linéaire → racine cubique = échelle de `wpctl`) et
-  écrits par `wpctl set-volume|set-mute` ; le volume est coalescé par
-  `mixflow-apply` (`pending_master`). Sortie par défaut : `wpctl set-default`.
-- **VU général** (`meter.rs`) : `pw-record` avec `stream.capture.sink=true`
-  SANS cible = moniteur de la sortie par défaut, suivi par WirePlumber quand
-  elle change. Crête émise en `levels` (`outputs.master`), la même charge
-  utile que Windows, donc `LevelBars`/`useLiveLevel` marchent tels quels.
-  Les propriétés `-P` sont du SPA-JSON : citer les valeurs avec espace.
+- **Bandeau « Sorties »** (`OutputsBar.tsx`, toujours affiché) : une ligne
+  par sortie physique/Bluetooth, la sortie par défaut en tête (= le « son
+  général »). Volume/mute lus dans `params.Props[0]` du sink
+  (`channelVolumes` linéaire → racine cubique = échelle de `wpctl`), écrits
+  par `wpctl set-volume|set-mute` ; volume 0..150 %, coalescé par
+  `mixflow-apply` (`pending_volumes`). « Utiliser par défaut » =
+  `wpctl set-default`.
+- **VU-mètres** (`meter.rs`) : un `pw-record` par VU, f32 brut sur stdout.
+  Sortie : `--target <sink>` + `stream.capture.sink=true` (moniteur).
+  Appli : `--target <serial>` du flux (une sortie de flux accepte plusieurs
+  liens, la lecture n'est pas gênée) ; pour une appli réglée, la sortie de
+  sa chaîne (après EQ et volume). `Meters::sync` (1×/s, thread
+  `mixflow-levels`) démarre/arrête/relance les captures selon
+  `wanted_meters` ; crêtes émises 20×/s en `levels` (`outputs[node.name]`,
+  `lines[clé d'appli]`), la même charge utile que Windows, donc
+  `LevelBars`/`levels.ts` marchent tels quels. Les propriétés `-P` sont du
+  SPA-JSON : citer les valeurs qui contiennent espace ou point.
 - Tests : `cargo test` couvre model/chain/pw/icons/meter sans PipeWire.
 
 ## Reste à faire / idées
 
-- Linux : VU par appli (seul le son général a un VU), gain par
-  sortie multiple (fan-out) comme sous Windows.
+- Linux : gain par sortie multiple (fan-out) comme sous Windows.
 
 - Support de l'IID AudioPolicyConfig pré-21H2 pour vieux Windows 10.
 - Personnalisation du raccourci global (Ctrl+Alt+M est câblé en dur dans

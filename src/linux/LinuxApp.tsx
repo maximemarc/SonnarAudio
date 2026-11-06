@@ -1,8 +1,8 @@
 /**
  * MixFlow sous Linux — mélangeur par application au-dessus de PipeWire.
  *
- * - Onglet Console : la tranche « Son général » (sortie par défaut, VU),
- *   puis une tranche par appli qui joue du son (ou déjà réglée).
+ * - Onglet Console : le bandeau des sorties (volume, mute, VU, sortie par
+ *   défaut), puis une tranche par appli qui joue du son (ou déjà réglée).
  * - Onglet Égaliseur : la page EQ partagée avec Windows, sur la liste des
  *   applis au lieu des canaux.
  *
@@ -18,8 +18,8 @@ import logo from "../assets/logo.png";
 import { initLevels } from "../levels";
 import * as api from "./api";
 import AppStrip from "./AppStrip";
-import GeneralStrip from "./GeneralStrip";
-import type { AppView, LinuxState, MasterView } from "./types";
+import OutputsBar from "./OutputsBar";
+import type { AppView, LinuxState, OutputView } from "./types";
 
 export default function LinuxApp() {
   const [state, setState] = useState<LinuxState | null>(null);
@@ -50,12 +50,13 @@ export default function LinuxApp() {
     });
   }, []);
 
-  /** Patch optimiste du son général. */
-  const patchMaster = useCallback((fn: (m: MasterView) => void) => {
+  /** Patch optimiste d'une sortie. */
+  const patchOutput = useCallback((name: string, fn: (o: OutputView) => void) => {
     setState((s) => {
-      if (!s?.master) return s;
+      if (!s) return s;
       const next = structuredClone(s);
-      if (next.master) fn(next.master);
+      const o = next.outputs.find((x) => x.name === name);
+      if (o) fn(o);
       return next;
     });
   }, []);
@@ -160,25 +161,20 @@ export default function LinuxApp() {
       ) : (
         <main className="content">
           <section className="console">
-            <div className="console-group">
-              <h2>Général</h2>
-              <div className="rail">
-                <GeneralStrip
-                  master={state.master}
-                  outputs={state.outputs}
-                  onVolume={(v) => {
-                    patchMaster((m) => (m.volume = v));
-                    api.setMasterVolume(v).catch(fail);
-                  }}
-                  onMute={(muted) => {
-                    patchMaster((m) => (m.muted = muted));
-                    api.setMasterMuted(muted).catch(fail);
-                  }}
-                  onDefaultOutput={(output) =>
-                    api.setDefaultOutput(output).then(setState).catch(fail)
-                  }
-                />
-              </div>
+            <div className="console-group lx-full">
+              <h2>Sorties</h2>
+              <OutputsBar
+                outputs={state.outputs}
+                onVolume={(name, v) => {
+                  patchOutput(name, (o) => (o.volume = v));
+                  api.setOutputVolume(name, v).catch(fail);
+                }}
+                onMute={(name, muted) => {
+                  patchOutput(name, (o) => (o.muted = muted));
+                  api.setOutputMuted(name, muted).catch(fail);
+                }}
+                onMakeDefault={(name) => api.setDefaultOutput(name).then(setState).catch(fail)}
+              />
             </div>
             <div className="console-group">
               <h2>Applications</h2>

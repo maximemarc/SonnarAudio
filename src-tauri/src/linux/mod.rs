@@ -55,8 +55,12 @@ struct Inner {
     /// poussés : un sink qui (ré)apparaît reçoit l'état courant.
     pushed_sink: Mutex<HashMap<String, u32>>,
     notice: Mutex<Option<String>>,
-    /// Volume général demandé, pas encore envoyé à `wpctl` (coalescé).
-    pending_master: Mutex<Option<f32>>,
+    /// Volumes de sorties demandés, pas encore envoyés à `wpctl`
+    /// (coalescés) : `node.name` → volume.
+    pending_volumes: Mutex<HashMap<String, f32>>,
+    /// VU-mètres en cours et ceux à faire tourner.
+    meters: meter::Meters,
+    meters_wanted: Mutex<HashMap<meter::MeterId, meter::Source>>,
 }
 
 type Shared = Arc<Inner>;
@@ -86,23 +90,18 @@ struct OutputView {
     name: String,
     label: String,
     bluetooth: bool,
-}
-
-/// Le son général : la sortie par défaut du système.
-#[derive(Serialize, Clone)]
-struct MasterView {
-    /// `node.name` de la sortie par défaut.
-    name: String,
-    label: String,
+    /// C'est la sortie par défaut du système.
+    is_default: bool,
     /// Échelle de `wpctl` (1.0 = 100 %), `None` si PipeWire ne la publie pas.
     volume: Option<f32>,
     muted: bool,
 }
 
+/// Volume maximal d'une sortie (échelle `wpctl`) : 150 %, comme les applis.
+const MAX_OUTPUT_VOLUME: f32 = 1.5;
+
 #[derive(Serialize, Clone)]
 struct LinuxState {
-    /// Absent tant qu'aucune sortie par défaut n'est connue.
-    master: Option<MasterView>,
     apps: Vec<AppView>,
     outputs: Vec<OutputView>,
     /// `node.name` de la sortie par défaut du système.
@@ -258,23 +257,14 @@ fn build_state(inner: &Inner) -> LinuxState {
                 n.description.clone()
             },
             bluetooth: n.api == "bluez5" || n.name.starts_with("bluez_output"),
+            is_default: n.name == graph.default_sink,
+            volume: n.volume,
+            muted: n.muted,
         })
         .collect();
     outputs.sort_by(|a, b| a.label.cmp(&b.label));
 
-    let master = graph.node_by_name(&graph.default_sink).map(|n| MasterView {
-        name: n.name.clone(),
-        label: if n.description.is_empty() {
-            n.name.clone()
-        } else {
-            n.description.clone()
-        },
-        volume: n.volume,
-        muted: n.muted,
-    });
-
     LinuxState {
-        master,
         apps,
         outputs,
         default_output: graph.default_sink.clone(),
@@ -282,6 +272,45 @@ fn build_state(inner: &Inner) -> LinuxState {
         pipewire_ok: graph.ready,
         notice: inner.notice.lock().clone(),
     }
+}
+
+/// VU à faire tourner : chaque sortie, et chaque appli qui a un flux
+/// ouvert (sortie de sa chaîne si elle est réglée, sinon son propre flux).
+fn wanted_meters(inner: &Inner, state: &LinuxState) -> HashMap<meter::MeterId, meter::Source> {
+    let graph = inner.graph.lock();
+    let cfg = inner.config.lock();
+    let mut wanted = HashMap::new();
+    for o in &state.outputs {
+        wanted.insert(
+            ("outputs", o.name.clone()),
+            meter::Source::Sink(o.name.clone()),
+        );
+    }
+    for a in state.apps.iter().filter(|a| a.streams > 0) {
+        let chain_out = cfg
+            .find(&a.key)
+            .and_then(|c| graph.node_by_name(&playback_name(&c.slug)));
+        // Sinon le flux de l'appli qui joue plutôt qu'un flux en pause ; à
+        // égalité le plus ancien (id le plus petit), pour ne pas sauter de
+        // l'un à l'autre à chaque mise à jour.
+        let node = chain_out.or_else(|| {
+            graph
+                .nodes
+                .values()
+                .filter(|n| {
+                    n.is_app_playback()
+                        && n.app_key().is_some_and(|k| k.eq_ignore_ascii_case(&a.key))
+                })
+                .max_by_key(|n| (n.state == "running", std::cmp::Reverse(n.id)))
+        });
+        if let Some(n) = node {
+            wanted.insert(
+                ("lines", a.key.clone()),
+                meter::Source::Stream(n.serial.clone()),
+            );
+        }
+    }
+    wanted
 }
 
 // -- routage ----------------------------------------------------------------------
@@ -377,31 +406,47 @@ fn spawn_threads(app: AppHandle, inner: Shared) {
             std::thread::sleep(Duration::from_millis(250));
             if i.graph_dirty.swap(false, Ordering::Relaxed) {
                 reconcile(&i);
-                let _ = a.emit("lx_state", build_state(&i));
+                let st = build_state(&i);
+                *i.meters_wanted.lock() = wanted_meters(&i, &st);
+                let _ = a.emit("lx_state", st);
             }
         })
         .expect("thread mixflow-route");
 
-    // 3. VU du son général (relancé si pw-record s'arrête).
+    // 3. VU-mètres : crêtes émises 20×/s, captures recalées chaque seconde
+    //    (nouvelle appli, sortie branchée, pw-record mort…).
+    let i = inner.clone();
     let a = app;
     std::thread::Builder::new()
-        .name("mixflow-meter".into())
-        .spawn(move || loop {
-            let res = meter::run(|peak| {
-                // Même charge utile que le moteur Windows : `levels.ts` et
-                // `LevelBars` s'en servent tels quels (id "*" = agrégat).
+        .name("mixflow-levels".into())
+        .spawn(move || {
+            let mut tick = 0u32;
+            loop {
+                if tick % 20 == 0 {
+                    let wanted = i.meters_wanted.lock().clone();
+                    i.meters.sync(&wanted);
+                }
+                tick = tick.wrapping_add(1);
+                let mut lines = serde_json::Map::new();
+                let mut outputs = serde_json::Map::new();
+                for ((kind, id), peak) in i.meters.take() {
+                    let target = if kind == "outputs" {
+                        &mut outputs
+                    } else {
+                        &mut lines
+                    };
+                    target.insert(id, peak.into());
+                }
+                // Même charge utile que le moteur Windows : `levels.ts`,
+                // `LevelBars` et `useLiveLevel` s'en servent tels quels.
                 let _ = a.emit(
                     "levels",
-                    serde_json::json!({ "lines": {}, "outputs": { "master": peak } }),
+                    serde_json::json!({ "lines": lines, "outputs": outputs }),
                 );
-            });
-            if let Err(e) = res {
-                eprintln!("[mixflow] VU : {e}");
+                std::thread::sleep(Duration::from_millis(50));
             }
-            let _ = a.emit("levels", serde_json::json!({ "lines": {}, "outputs": {} }));
-            std::thread::sleep(Duration::from_secs(2));
         })
-        .expect("thread mixflow-meter");
+        .expect("thread mixflow-levels");
 
     // 4. Paramètres live (coalescés) + sauvegarde différée.
     let i = inner;
@@ -411,12 +456,12 @@ fn spawn_threads(app: AppHandle, inner: Shared) {
             let mut last_change = Instant::now();
             loop {
                 std::thread::sleep(Duration::from_millis(40));
-                let master = i.pending_master.lock().take();
-                if let Some(v) = master {
-                    let id = default_sink_id(&i);
+                let volumes: Vec<(String, f32)> = i.pending_volumes.lock().drain().collect();
+                for (name, v) in volumes {
+                    let id = i.graph.lock().node_by_name(&name).map(|n| n.id);
                     if let Some(id) = id {
                         if let Err(e) = pw::set_volume(id, v) {
-                            eprintln!("[mixflow] volume général : {e}");
+                            eprintln!("[mixflow] volume de {name} : {e}");
                         }
                     }
                 }
@@ -585,28 +630,41 @@ async fn lx_delete_preset(name: String, state: State<'_, Shared>) -> Result<Linu
     Ok(build_state(&state))
 }
 
-fn default_sink_id(inner: &Inner) -> Option<u32> {
-    let g = inner.graph.lock();
-    g.node_by_name(&g.default_sink).map(|n| n.id)
+fn hw_sink_id(inner: &Inner, output: &str) -> Result<u32, String> {
+    inner
+        .graph
+        .lock()
+        .node_by_name(output)
+        .filter(|n| n.is_hw_sink())
+        .map(|n| n.id)
+        .ok_or_else(|| "Sortie introuvable (débranchée ?).".to_string())
 }
 
-/// Volume de la sortie par défaut (échelle `wpctl`, 0..1). Coalescé par le
-/// thread `mixflow-apply` : un fader tiré vite ne lance pas cent `wpctl`.
+/// Volume d'une sortie (échelle `wpctl`, 0..1,5). Coalescé par le thread
+/// `mixflow-apply` : un fader tiré vite ne lance pas cent `wpctl`.
 #[tauri::command]
-async fn lx_set_master_volume(volume: f32, state: State<'_, Shared>) -> Result<(), String> {
+async fn lx_set_output_volume(
+    output: String,
+    volume: f32,
+    state: State<'_, Shared>,
+) -> Result<(), String> {
+    hw_sink_id(&state, &output)?;
     let v = if volume.is_finite() {
-        volume.clamp(0.0, 1.0)
+        volume.clamp(0.0, MAX_OUTPUT_VOLUME)
     } else {
         1.0
     };
-    *state.pending_master.lock() = Some(v);
+    state.pending_volumes.lock().insert(output, v);
     Ok(())
 }
 
 #[tauri::command]
-async fn lx_set_master_muted(muted: bool, state: State<'_, Shared>) -> Result<(), String> {
-    let id = default_sink_id(&state).ok_or("Aucune sortie par défaut.")?;
-    pw::set_mute(id, muted)
+async fn lx_set_output_muted(
+    output: String,
+    muted: bool,
+    state: State<'_, Shared>,
+) -> Result<(), String> {
+    pw::set_mute(hw_sink_id(&state, &output)?, muted)
 }
 
 /// Change la sortie par défaut du système : les applis qui la suivent (et
@@ -616,14 +674,7 @@ async fn lx_set_default_output(
     output: String,
     state: State<'_, Shared>,
 ) -> Result<LinuxState, String> {
-    let id = state
-        .graph
-        .lock()
-        .node_by_name(&output)
-        .filter(|n| n.is_hw_sink())
-        .map(|n| n.id)
-        .ok_or("Sortie introuvable (débranchée ?).")?;
-    pw::set_default(id)?;
+    pw::set_default(hw_sink_id(&state, &output)?)?;
     Ok(build_state(&state))
 }
 
@@ -655,7 +706,9 @@ pub fn run() {
                 routed: Mutex::new(HashMap::new()),
                 pushed_sink: Mutex::new(HashMap::new()),
                 notice: Mutex::new(notice),
-                pending_master: Mutex::new(None),
+                pending_volumes: Mutex::new(HashMap::new()),
+                meters: meter::Meters::default(),
+                meters_wanted: Mutex::new(HashMap::new()),
             });
             app.manage(inner.clone());
 
@@ -687,8 +740,8 @@ pub fn run() {
             lx_forget_app,
             lx_save_preset,
             lx_delete_preset,
-            lx_set_master_volume,
-            lx_set_master_muted,
+            lx_set_output_volume,
+            lx_set_output_muted,
             lx_set_default_output,
             lx_dismiss_notice,
         ])
